@@ -149,7 +149,7 @@ function viewCustCard(id){
 // حالة السيرفر: التطبيق، الداتابيس (SQL)، الدالة admin-users. لازم كلهم نفس الرقم
 function healthRows(){
   var h = ADM.health; if(!h || h.pending) return null;
-  return [['hApp', 'v' + h.app, true], ['hDb', h.db ? 'v' + h.db : t('hMissing'), h.db === h.app], ['hFn', h.fn && h.fn !== 'old' ? 'v' + h.fn : t('hOld'), h.fn === h.app], ['hMfa', h.mfa ? '✓' : '✗', h.mfa]];
+  return [['hApp', 'v' + h.app, true], ['hDb', h.db ? 'v' + h.db : t('hMissing'), h.db === h.need], ['hFn', h.fn && h.fn !== 'old' ? 'v' + h.fn : t('hOld'), h.fn === h.need], ['hMfa', h.mfa ? '✓' : '✗', h.mfa]];
 }
 function healthWarn(){
   var r = healthRows(); if(!r) return '';

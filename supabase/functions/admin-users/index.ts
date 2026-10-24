@@ -24,7 +24,7 @@ const ANON_KEY = Deno.env.get('SUPABASE_ANON_KEY') || '';
 const SERVICE_KEY = Deno.env.get('SUPABASE_SERVICE_ROLE_KEY') || '';
 const ALLOWED = (Deno.env.get('ALLOWED_ORIGINS') || '').split(',').map((s) => s.trim()).filter(Boolean);
 // إيميل داخلي للزبون (مش إيميل حقيقي): رقم التلفون + دومين محجوز ما حدا بيقدر يملكه
-const FN_VERSION = '1.17';   // لازم يطابق رقم التطبيق (APP_VERSION) والداتابيس (app.db_version)
+const FN_VERSION = '1.17';   // نسخة السيرفر: لازم تطابق app.db_version و SERVER_VERSION بالتطبيق
 const CUSTOMER_EMAIL_DOMAIN = 'tabooni.invalid';
 const ABC = 'abcdefghjkmnpqrstuvwxyz23456789'; // بدون 0/O و 1/l/I
 

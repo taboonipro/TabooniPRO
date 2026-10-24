@@ -612,7 +612,7 @@ begin
 exception when others then return app.err(sqlerrm);
 end $$;
 
--- رقم نسخة الداتابيس (لازم يطابق رقم التطبيق ورقم الدالة admin-users)
+-- رقم نسخة السيرفر (الداتابيس + الدالة admin-users). بيتغيّر بس لما ملفات السيرفر تتغيّر
 create or replace function app.db_version() returns text language sql immutable set search_path = pg_catalog as $$ select '1.17'::text $$;
 
 -- الإدارة: حالة السيرفر (التطبيق بيقارن النسخ وبينبّه إذا إشي مش محدّث)

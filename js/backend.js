@@ -143,7 +143,7 @@ async function sbCall(fn, args){
     }
     // ---- فحص السيرفر: نسخة الداتابيس + نسخة الدالة admin-users
     if(fn === 'health'){
-      var out = {ok:true, app: APP_VERSION, db:'', fn:'', signup:false, mfa:false};
+      var out = {ok:true, app: APP_VERSION, need: SERVER_VERSION, db:'', fn:'', signup:false, mfa:false};
       try{ var h = await SB.rpc('admin_health'); if(h.data && h.data.ok){ out.db = h.data.db; out.signup = !!h.data.signup; out.mfa = !!h.data.mfa; } }catch(x){}
       try{ var pg = await SB.functions.invoke('admin-users', { body: { action:'ping' } }); var pd = pg.data;
         if(pg.error){ try{ pd = await pg.error.context.json(); }catch(y){ pd = null; } }
