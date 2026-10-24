@@ -4,6 +4,8 @@
  * وكل دالة بتفحص الدور بنفسها بالسيرفر.
  */
 var CUSTOMER_EMAIL_DOMAIN = 'tabooni.invalid'; // إيميل داخلي للزبون: رقمه@tabooni.invalid (دومين محجوز، ما حدا بيملكه)
+var STAFF_EMAIL_DOMAIN = 'staff.tabooni.invalid'; // اسم مستخدم إدارة (مثلاً ayman) ← ayman@staff.tabooni.invalid
+function staffName(email){ email = String(email || ''); var s = '@' + STAFF_EMAIL_DOMAIN; return email.slice(-s.length) === s ? email.slice(0, -s.length) : email; }
 
 // الجلسة: زبون ← بتضل بالتلفون (localStorage). إدارة ← بتنمسح لما تسكّر الصفحة (sessionStorage)
 function adminMode(){ try{ return sessionStorage.getItem('tp_admin') === '1'; }catch(e){ return false; } }
@@ -81,14 +83,27 @@ async function sbCall(fn, args){
     // ---- تسجيل الدخول: إيميل ← إدارة، رقم تلفون ← زبون
     if(fn === 'login'){
       var u = String(args[0] || '').trim(), pw = String(args[1] || ''), email;
+      // فيه @ ← إيميل إدارة | رقم ← زبون | اسم (حروف) ← اسم مستخدم إدارة
       if(u.indexOf('@') > -1) email = u.toLowerCase();
+      else if(/^[a-z][a-z0-9._-]{2,30}$/i.test(u)) email = u.toLowerCase() + '@' + STAFF_EMAIL_DOMAIN;
       else { var ph = normPhone(u); if(!/^05\d{8}$/.test(ph)) return {ok:false, error:'BAD_LOGIN'}; email = customerEmail(ph); }
       clearAuthStore();
       var s = await SB.auth.signInWithPassword({ email: email, password: pw });
-      if(s.error) return {ok:false, error: s.error.status === 429 ? 'LOCKED' : 'BAD_LOGIN'};
+      if(s.error){
+        var em = String(s.error.message || '');
+        if(s.error.status === 429) return {ok:false, error:'LOCKED'};
+        if(/not confirmed/i.test(em)) return {ok:false, error:'NOT_CONFIRMED'};
+        if(/invalid login|credentials/i.test(em) || s.error.status === 400) return {ok:false, error:'BAD_LOGIN'};
+        return {ok:false, error:'AUTH_SETUP'};          // مشكلة بإعداد Supabase (مش كلمة السر)
+      }
       var me = await SB.rpc('me');
       var d = me.data || {};
-      if(me.error || !d.ok){ await SB.auth.signOut({scope:'local'}); clearAuthStore(); return {ok:false, error: d.error === 'TEMP_EXPIRED' ? 'TEMP_EXPIRED' : 'BAD_LOGIN'}; }
+      if(me.error || !d.ok){
+        await SB.auth.signOut({scope:'local'}); clearAuthStore();
+        if(d.error === 'TEMP_EXPIRED') return {ok:false, error:'TEMP_EXPIRED'};
+        if(d.error === 'NO_LOGIN') return {ok:false, error:'NO_ROLE'};   // كلمة السر صح، بس الحساب مش إدارة ومش زبون
+        return {ok:false, error:'DB_SETUP'};                             // كلمة السر صح، بس الداتابيس مش مركّبة مزبوط
+      }
       if(d.role === 'admin'){ moveSessionToTab(); return {ok:true, role:'admin', session:'sb'}; }
       if(d.role === 'admin_mfa') return {ok:true, role:'mfa'};       // الخطوة الثانية: كود من تطبيق المصادقة
       return {ok:true, role:'customer', token:'sb', mustChange: !!d.mustChange, name: d.name, card: d.card, pending: d.pending || []};

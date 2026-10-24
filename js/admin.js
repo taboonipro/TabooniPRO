@@ -315,7 +315,7 @@ function tabBody(){
         '<label for="s4">' + esc(t('setEmail')) + '</label><input id="s4" type="email" dir="ltr" value="' + esc(s.ALERT_EMAIL || '') + '">' +
         '<button class="btn" id="sv" type="button">' + esc(t('save')) + '</button><div class="err" id="serr" role="alert"></div></section>' +
       '<section class="panel"><h2 class="sec">' + esc(t('securityTitle')) + '</h2><p class="sub" style="margin-bottom:0">' + esc(t('securityHint')) + '</p>' +
-        '<p class="sub" style="margin:10px 0 0">' + esc(t('currentUser')) + ' <b dir="ltr">' + esc(d.adminUser || '') + '</b></p>' +
+        '<p class="sub" style="margin:10px 0 0">' + esc(t('currentUser')) + ' <b dir="ltr">' + esc(typeof staffName === 'function' ? staffName(d.adminUser) : (d.adminUser || '')) + '</b> · <span dir="ltr">v' + esc(APP_VERSION) + '</span></p>' +
         '<label for="p1">' + esc(t('curPin')) + '</label><input id="p1" type="password" autocomplete="current-password" dir="ltr">' +
         '<label for="p2">' + esc(t('newPin')) + '</label><input id="p2" type="password" autocomplete="new-password" minlength="8" dir="ltr">' +
         '<button class="btn ghost" id="cpin" type="button">' + esc(t('changePin')) + '</button><div class="err" id="perr" role="alert"></div>' +
