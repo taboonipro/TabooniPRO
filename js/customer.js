@@ -10,34 +10,46 @@ function reviewHref(u){
   h[0] += (h[0].indexOf('?') > -1 ? '&' : '?') + 'hl=' + hl;
   return h.join('#');
 }
-/* 1) الانضمام للبرنامج (بدون طبعة) */
+/* 1) الاشتراك: الزبون بيسجّل لحاله وبيختار كلمة سر، وبيشوف بطاقته طوالي */
+var JOIN_T0 = 0;
 function viewJoin(keep){
   keep = keep || {phone:'', name:'', gender:'', bday:''};
-  $app.innerHTML = demoBar() + header(myCardBtn()) +
-    '<section class="panel"><h1>' + esc(t('joinTitle')) + '</h1><p class="sub">' + esc(t('joinSub')) + '</p>' + howPanel() +
+  if(!JOIN_T0) JOIN_T0 = Date.now();
+  $app.className = 'wrap';
+  $app.innerHTML = demoBar() + header() +
+    '<section class="panel"><h1>' + esc(t('joinTitle')) + '</h1><p class="sub">' + esc(t('joinSub')) + '</p>' +
       '<label for="nm">' + esc(t('nameLabel')) + '</label><input id="nm" type="text" autocomplete="name" maxlength="40" placeholder="' + esc(t('namePh')) + '">' +
-      '<label for="ph">' + esc(t('phoneLabel')) + '</label><input id="ph" type="tel" inputmode="tel" dir="ltr" autocomplete="tel" placeholder="05XXXXXXXX">' +
+      '<label for="ph">' + esc(t('phoneLabel')) + '</label><input id="ph" type="tel" inputmode="tel" dir="ltr" autocomplete="username" placeholder="05XXXXXXXX">' +
       personFields('j', keep.gender, keep.bday) +
+      '<label for="jp">' + esc(t('newPass')) + '</label><input id="jp" type="password" autocomplete="new-password" maxlength="64" dir="ltr">' +
+      '<label for="jp2">' + esc(t('newPass2')) + '</label><input id="jp2" type="password" autocomplete="new-password" maxlength="64" dir="ltr">' +
+      // فخ للبوتات: خانة مخفية عن البشر
+      '<div aria-hidden="true" style="position:absolute;width:1px;height:1px;overflow:hidden;clip-path:inset(50%);white-space:nowrap;opacity:0;pointer-events:none"><label>Website<input id="jw" type="text" tabindex="-1" autocomplete="off"></label></div>' +
       consentBox() +
       '<button class="btn" id="send" type="button">' + esc(t('joinBtn')) + '</button><div class="err" id="err" role="alert"></div>' +
-    '</section>';
+      '<p class="sub hint" style="margin:14px 0 0">' + esc(t('haveAccount')) + ' <a href="' + esc(APP_URL) + '">' + esc(t('loginBtn')) + '</a></p>' +
+    '</section>' + howPanel();
   var ph = document.getElementById('ph'), nm = document.getElementById('nm');
   ph.value = keep.phone; nm.value = keep.name;
   bindCommon(function(){ var pp = readPerson('j'); viewJoin({phone:ph.value, name:nm.value, gender:pp.gender, bday:pp.bday}); });
   document.getElementById('send').onclick = function(){
-    var err = document.getElementById('err'), p = normPhone(ph.value);
+    var err = document.getElementById('err'), p = normPhone(ph.value), pw = document.getElementById('jp').value, pw2 = document.getElementById('jp2').value;
     if(!nm.value.trim()){ err.textContent = errText('NEED_NAME'); nm.focus(); return; }
     if(!validName(nm.value)){ err.textContent = errText('BAD_NAME'); nm.focus(); return; }
     if(!/^05\d{8}$/.test(p)){ err.textContent = errText('BAD_PHONE'); ph.focus(); return; }
     var pp = readPerson('j');
     if(!pp.gender){ err.textContent = errText('NEED_GENDER'); return; }
     if(pp.partial){ err.textContent = errText('BAD_BDAY'); return; }
+    if(!strongPass(pw, p)){ err.textContent = errText('WEAK_PASS'); document.getElementById('jp').focus(); return; }
+    if(pw !== pw2){ err.textContent = t('passMismatch'); document.getElementById('jp2').focus(); return; }
     if(!document.getElementById('cs').checked){ err.textContent = errText('NEED_CONSENT'); return; }
     var btn = this; btn.disabled = true; btn.textContent = t('sending');
-    api('joinProgram', p, nm.value, true, pp.gender, pp.bday).then(function(r){
+    api('signup', {name:nm.value.trim(), phone:p, gender:pp.gender, bday:pp.bday, password:pw, consent:true, website:document.getElementById('jw').value, ms:Date.now() - JOIN_T0}).then(function(r){
       if(!r.ok){ btn.disabled = false; btn.textContent = t('joinBtn'); err.textContent = errText(r.error); return; }
-      // نفس الرد لكل رقم (ما بنكشف مين مسجّل). البطاقة بتنفتح من رابط الواتساب بعد ما يتأكد الرقم
-      viewMessage(t('joinedExisting'));
+      store('tp_user', p);
+      CTOKEN = r.token; store('tp_ctok', CTOKEN);
+      try{ history.replaceState(null, '', location.pathname); }catch(e){}   // بدون ?new=1: الـ Refresh بيفتح البطاقة
+      showMine(r, t('welcome'));
     });
   };
 }
@@ -167,6 +179,7 @@ function renderCard(card, opts){
 function routeLink(p){
   if(p.t) viewFeedback(p.t);
   else if(p.c){ try{ history.replaceState(null, '', location.pathname); }catch(e){} if(CTOKEN) viewMyCard(); else renderLogin(t('cardInApp')); }
+  else if(CTOKEN){ try{ history.replaceState(null, '', location.pathname); }catch(e){} viewMyCard(); }   // داخل أصلاً ← بطاقته
   else viewJoin();
 }
 
@@ -191,9 +204,21 @@ function viewMyCard(flash){
 // بعد الدخول: إذا في طلب من اليوم لسا ما انقيّم ← التقييم أول. غير هيك ← البطاقة طوالي
 function showMine(r, flash){
   store('tp_card', null);
+  if(r.waitApproval) return viewWaiting(r.name);
   var p = (r.pending || [])[0];
   if(p) return rateMine(r.card, p);
   renderCard(r.card, {mine:true, flash:flash});
+}
+// سجّل على رقم كان إله بطاقة: بنستنى موافقة الإدارة قبل ما نعرض البطاقة القديمة
+function viewWaiting(name){
+  $app.className = 'wrap';
+  $app.innerHTML = demoBar() + header() + accountBtns(true) +
+    '<section class="panel">' + (name ? '<p class="hello">' + esc(t('hiName')) + ' ' + esc(name) + ' \uD83D\uDC4B</p>' : '') +
+      '<h1>' + esc(t('waitTitle')) + '</h1><p class="sub">' + esc(t('waitText')) + '</p>' +
+      '<button class="btn ghost" id="wRe" type="button">' + esc(t('retry')) + '</button></section>' + howPanel();
+  document.getElementById('accOut').onclick = function(){ custSignOut(); };
+  document.getElementById('wRe').onclick = function(){ viewMyCard(); };
+  bindCommon(function(){ viewWaiting(name); });
 }
 function rateMine(card, p){
   TOKEN_QTY = Math.max(1, Math.min(10, Number(p.qty) || 1));
@@ -246,6 +271,64 @@ function renderSetPassword(name, forced){
 /* تثبيت التطبيق على الشاشة الرئيسية */
 var INSTALL_EVT = null;
 window.addEventListener('beforeinstallprompt', function(e){ e.preventDefault(); INSTALL_EVT = e; var b = document.getElementById('instBox'); if(b) b.hidden = false; });
+window.addEventListener('appinstalled', function(){ store('tp_installed', '1'); closeInstallSheet(); });
+
+/* نافذة "ثبّت التطبيق" بتقفز لكل زائر (بأي متصفح):
+   أندرويد/كمبيوتر (Chrome, Edge, Samsung): زر تثبيت حقيقي
+   آيفون: شرح بخطوتين مع أيقونة زر المشاركة
+   متصفح داخل تطبيق (فيسبوك، إنستغرام…): "افتح بالمتصفح" أول
+   "مش هلأ" ← بترجع بعد 3 أيام */
+function installEnv(){
+  var ua = navigator.userAgent || '';
+  var ios = /iphone|ipad|ipod/i.test(ua) || (/Macintosh/.test(ua) && navigator.maxTouchPoints > 1);
+  var android = /android/i.test(ua);
+  var inApp = /FBAN|FBAV|FB_IAB|Instagram|Line\/|Snapchat|TikTok|musical_ly|; wv\)/i.test(ua);
+  return {ios:ios, android:android, inApp:inApp, iosChrome:ios && /CriOS|EdgiOS|FxiOS/i.test(ua), mobile:ios || android};
+}
+var SHARE_ICO = '<svg viewBox="0 0 24 24" width="22" height="22" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true" style="vertical-align:-5px"><path d="M12 3v12"/><path d="M8 7l4-4 4 4"/><path d="M5 12v7a2 2 0 0 0 2 2h10a2 2 0 0 0 2-2v-7"/></svg>';
+var MENU_ICO = '<b style="font-size:20px;line-height:1">⋮</b>';
+var ADD_ICO = '<svg viewBox="0 0 24 24" width="20" height="20" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" aria-hidden="true" style="vertical-align:-4px"><rect x="3" y="3" width="18" height="18" rx="4"/><path d="M12 8v8M8 12h8"/></svg>';
+function installSnoozed(){
+  if(store('tp_installed')) return true;
+  var t0 = Number(store('tp_inst_skip') || 0);
+  return t0 && Date.now() - t0 < 3 * 864e5;
+}
+function closeInstallSheet(){ var x = document.getElementById('instSheet'); if(x) x.remove(); }
+function showInstallSheet(force){
+  if(isStandalone() || document.getElementById('instSheet') || (!force && installSnoozed())) return;
+  var env = installEnv(), body = '', canPrompt = !!INSTALL_EVT;
+  if(env.inApp) body = '<p>' + esc(t('instInApp')) + '</p><ol class="isteps"><li>' + MENU_ICO + ' ' + esc(t(env.ios ? 'instInAppIos' : 'instInAppAnd')) + '</li></ol>';
+  else if(canPrompt) body = '<p>' + esc(t('instWhy')) + '</p>';
+  else if(env.ios) body = '<p>' + esc(t('instWhy')) + '</p><ol class="isteps"><li>' + esc(t(env.iosChrome ? 'instIos1c' : 'instIos1')) + ' ' + SHARE_ICO + '</li><li>' + esc(t('instIos2')) + ' ' + ADD_ICO + '</li><li>' + esc(t('instIos3')) + '</li></ol>';
+  else if(env.android) body = '<p>' + esc(t('instWhy')) + '</p><ol class="isteps"><li>' + esc(t('instAnd1')) + ' ' + MENU_ICO + '</li><li>' + esc(t('instAnd2')) + '</li></ol>';
+  else return;   // كمبيوتر بدون دعم تثبيت: ما بنزعج
+  var d = document.createElement('div');
+  d.id = 'instSheet'; d.className = 'isheet'; d.setAttribute('role', 'dialog'); d.setAttribute('aria-modal', 'true'); d.setAttribute('aria-labelledby', 'instT');
+  d.innerHTML = '<div class="isheet-box"><img src="assets/icon-192.png" alt="" class="iicon"><h2 id="instT">' + esc(t('instTitle')) + '</h2>' + body +
+    '<div class="iacts">' + (canPrompt && !env.inApp ? '<button class="btn" id="instGo" type="button">' + esc(t('installApp')) + '</button>' : '') +
+    '<button class="btn ghost" id="instNo" type="button">' + esc(canPrompt && !env.inApp ? t('instLater') : t('instOk')) + '</button></div></div>';
+  document.body.appendChild(d);
+  var go = document.getElementById('instGo');
+  if(go) go.onclick = function(){
+    if(!INSTALL_EVT) return closeInstallSheet();
+    INSTALL_EVT.prompt();
+    INSTALL_EVT.userChoice.then(function(c){ INSTALL_EVT = null; if(c && c.outcome === 'accepted') store('tp_installed', '1'); else store('tp_inst_skip', String(Date.now())); closeInstallSheet(); });
+  };
+  document.getElementById('instNo').onclick = function(){ store('tp_inst_skip', String(Date.now())); closeInstallSheet(); };
+  d.addEventListener('click', function(e){ if(e.target === d){ store('tp_inst_skip', String(Date.now())); closeInstallSheet(); } });
+  (go || document.getElementById('instNo')).focus();
+}
+// بعد ما الصفحة تفتح: بنستنى شوي زر التثبيت من المتصفح (أندرويد)، وبعدين بنعرض النافذة
+function scheduleInstallSheet(){
+  if(isStandalone() || installSnoozed()) return;
+  var waited = 0;
+  (function tick(){
+    if(INSTALL_EVT || waited >= 3500) return showInstallSheet();
+    var env = installEnv();
+    if(env.ios || env.inApp) return showInstallSheet();
+    waited += 500; setTimeout(tick, 500);
+  })();
+}
 function isStandalone(){ return (window.matchMedia && matchMedia('(display-mode: standalone)').matches) || navigator.standalone === true; }
 function installBox(){
   if(isStandalone()) return '';

@@ -36,7 +36,7 @@ var ICO_P = {
   store:'<path d="M3 9l1.5-5h15L21 9"/><path d="M3 9a3 3 0 0 0 6 0 3 3 0 0 0 6 0 3 3 0 0 0 6 0"/><path d="M5 12v8h14v-8"/>'
 };
 function ico(n, cls){ return '<svg class="i ' + (cls || '') + '" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.9" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">' + (ICO_P[n] || '') + '</svg>'; }
-var TAB_ICO = {customers:'users', follow:'trend', gifts:'gift', nudges:'chat', bdays:'cake', recent:'star', links:'hourglass', import:'upload', settings:'gear'};
+var TAB_ICO = {signups:'user', customers:'users', follow:'trend', gifts:'gift', nudges:'chat', bdays:'cake', recent:'star', links:'hourglass', import:'upload', settings:'gear'};
 // صورة الزبون: أول حرفين من اسمه، بلون ثابت حسب الاسم
 function avatar(name, online){
   var w = String(name || '?').trim().split(/\s+/), s = (w[0] || '?').charAt(0) + (w[1] ? w[1].charAt(0) : ''), h = 0, i;
@@ -62,7 +62,7 @@ function viewAdmin(){
 function renderAdmin(){
   var d = ADM.data, st = d.stats;
   var nudgeOpen = d.nudges.filter(function(n){ return !n.sent; }).length;
-  var tabs = [['customers', t('tCustomers'), 0], ['follow', t('tFollow'), d.followUps.length], ['gifts', t('tGifts'), d.gifts.length],
+  var tabs = [['customers', t('tCustomers'), 0], ['signups', t('tSignups'), st.signups || 0], ['follow', t('tFollow'), d.followUps.length], ['gifts', t('tGifts'), d.gifts.length],
               ['nudges', t('tNudges'), nudgeOpen], ['bdays', t('tBdays'), (d.birthdays || []).filter(function(b){ return !b.sent && b.days <= 7; }).length], ['recent', t('tRecent'), 0], ['links', t('tLinks'), 0], ['import', t('tImport'), 0], ['settings', t('tSettings'), 0]];
   $app.className = 'wrap wide';
   $app.innerHTML = demoBar() +
@@ -118,6 +118,31 @@ function sendStampLink(phone, name, btn){
   };
   if(dlg.showModal) dlg.showModal(); else dlg.setAttribute('open', '');
   if(btn) btn.disabled = false;
+}
+// فلاتر قائمة الزبائن
+function custFilter(c, f){
+  if(f === 'pending') return !!c.signupPending;
+  if(f === 'nologin') return !c.hasLogin;
+  if(f === 'gift') return (c.gifts || []).some(function(g){ return g.status === 'available'; });
+  if(f === 'near') return c.stamps === 4 || c.stamps === 9;
+  if(f === 'idle'){ var last = Date.parse(c.lastStampAt || c.createdAt || ''); return !isNaN(last) && Date.now() - last > 30 * 864e5; }
+  return true;
+}
+// بطاقة الزبون مثل ما هو بيشوفها (للإدارة)
+function viewCustCard(id){
+  var dlg = document.getElementById('qr');
+  dlg.innerHTML = '<p class="sub">…</p>';
+  if(dlg.showModal && !dlg.open) dlg.showModal(); else dlg.setAttribute('open', '');
+  api('adminCard', SESSION, id).then(function(r){
+    if(!r.ok){ dlg.innerHTML = '<p class="err">' + esc(errText(r.error)) + '</p><button class="btn small ghost" type="button" id="qc">' + esc(t('close')) + '</button>'; document.getElementById('qc').onclick = function(){ dlg.close(); }; return; }
+    var c = r.card, s = c.stamps, slots = '';
+    for(var i = 1; i <= 10; i++){ var gift = (i === 5 || i === 10), on = i <= s, art = pizzaSVG(on, i === 5); if(gift && on) art = giftGlow(art);
+      slots += '<div class="slot' + (gift ? ' gift' : '') + '"><span class="n">' + i + (gift ? ' \uD83C\uDF81' : '') + '</span>' + art + '</div>'; }
+    dlg.innerHTML = '<h2>' + esc(c.name) + '</h2><p class="sub" style="margin:0 0 10px">' + s + '/10 ' + esc(t('stamps')) +
+      (c.rewards.length ? ' · ' + c.rewards.map(function(x){ return esc(t(x.type)); }).join('، ') : '') + '</p>' +
+      '<div class="grid">' + slots + '</div><button class="btn small ghost" type="button" id="qc" style="margin-top:14px">' + esc(t('close')) + '</button>';
+    document.getElementById('qc').onclick = function(){ dlg.close(); };
+  });
 }
 function hint(k){ return '<p class="sub hint">' + esc(t(k)) + '</p>'; }
 function waBtn(phone, msg, cls, label, extra){ return phone ? '<a class="btn small wa ' + (cls || '') + '" target="_blank" rel="noopener" href="' + esc(waLink(phone, msg)) + '"' + (extra || '') + '>' + CHAT_ICO + esc(label || t('whatsapp')) + '</a>' : ''; }
@@ -261,12 +286,25 @@ function tabBody(){
         '<div class="meta">' + esc(t('oneLeft' + n.next)) + ' · ' + n.stamps + '/10 · <span dir="ltr">' + esc(n.phone) + '</span></div></div></div>' +
         '<div class="acts">' + waBtn(n.phone, fill(tqg('nudgeMsg' + n.next, 1, n.gender), nm), n.sent ? 'ghost' : '', n.sent ? t('resend') : t('sendReminder'), ' data-nudge="' + esc(n.id) + '"') + '</div></div>'; });
     return hint('nudgesHint') + '<div class="list">' + (rows.join('') || '<p class="empty">' + esc(t('empty')) + '</p>') + '</div>';
+  } else if(ADM.tab === 'signups'){
+    var su = d.customers.filter(function(c){ return c.signupPending; }).sort(function(a, b){ return String(b.signupAt).localeCompare(String(a.signupAt)); });
+    rows = su.map(function(c){
+      return '<div class="item cust">' + avatar(c.name) + '<div class="cinfo"><b>' + esc(c.name) + '</b> ' +
+        (c.claim ? '<span class="pill warn">' + esc(fill(t('existingCard'), c.totalStamps)) + '</span>' : '<span class="pill">' + esc(t('newCust')) + '</span>') +
+        '<div class="meta"><span dir="ltr">' + esc(c.phone) + '</span> · ' + esc(fmtDate(c.signupAt)) + '</div>' + (c.claim ? '<p class="sub" style="margin:6px 0 0">' + esc(t('claimHint')) + '</p>' : '') + '</div>' +
+        '<div class="acts"><button class="btn small gold" type="button" data-approve="' + esc(c.id) + '">✓ ' + esc(t('approve')) + '</button>' +
+        '<button class="btn small ghost" type="button" data-viewcard="' + esc(c.id) + '">' + esc(t('viewCard')) + '</button>' +
+        '<button class="btn small ghost danger" type="button" data-reject="' + esc(c.id) + '" data-claim="' + (c.claim ? '1' : '') + '" data-name="' + esc(c.name) + '">✕ ' + esc(t('reject')) + '</button></div></div>'; });
+    return hint('signupsHint') + (su.length > 1 ? '<button class="btn small" id="apAll" type="button" style="margin:0 0 12px">✓ ' + esc(t('approveAll')) + ' (' + su.length + ')</button>' : '') +
+      '<div class="list">' + (rows.join('') || '<p class="empty">' + esc(t('noSignups')) + '</p>') + '</div>';
   } else if(ADM.tab === 'customers'){
-    var q = ADM.q.trim().toLowerCase(), qd = q.replace(/\D/g, '');
-    rows = d.customers.filter(function(c){ return !q || String(c.name).toLowerCase().indexOf(q) > -1 || (qd && String(c.phone).indexOf(qd) > -1); }).map(function(c){
-      return '<div class="item cust">' + avatar(c.name, c.hasLogin && !c.mustChange) + '<div class="cinfo"><b>' + esc(c.name) + '</b>' + (c.openLink ? ' <span class="pill">' + esc(t('linkOpen')) + '</span>' : '') + (c.hasLogin ? ' <span class="pill' + (c.mustChange ? ' muted' : ' ok') + '" title="' + esc(c.lastLoginAt ? t('lastLogin') + ': ' + fmtDate(c.lastLoginAt) : '') + '">' + esc(c.mustChange ? t('loginPending') : t('loginOn')) + '</span>' : '') + (c.consent === false ? ' <span class="pill muted">' + esc(t('noConsent')) + '</span>' : '') + (c.verified === false ? ' <span class="pill warn">' + esc(t('unverified')) + '</span>' : '') + (!c.gender ? ' <span class="pill muted">' + esc(t('noGender')) + '</span>' : '') + (c.bday ? ' <span class="pill">\uD83C\uDF82 ' + esc(bdayTxt(c.bday)) + '</span>' : '') +
+    var q = normName(ADM.q), qd = String(ADM.q).replace(/\D/g, ''), f = ADM.f || 'all';
+    var list = d.customers.filter(function(c){ return (!q && !qd) || (q && normName(c.name).indexOf(q) > -1) || (qd && String(c.phone).indexOf(qd) > -1); }).filter(function(c){ return custFilter(c, f); });
+    rows = list.map(function(c){
+      return '<div class="item cust">' + avatar(c.name, c.hasLogin && !c.mustChange) + '<div class="cinfo"><b>' + esc(c.name) + '</b>' + (c.openLink ? ' <span class="pill">' + esc(t('linkOpen')) + '</span>' : '') + (c.signupPending ? ' <span class="pill warn">' + esc(t('pendingPill')) + '</span>' : '') + (c.hasLogin ? ' <span class="pill' + (c.mustChange ? ' muted' : ' ok') + '" title="' + esc(c.lastLoginAt ? t('lastLogin') + ': ' + fmtDate(c.lastLoginAt) : '') + '">' + esc(c.mustChange ? t('loginPending') : t('loginOn')) + '</span>' : '') + (c.consent === false ? ' <span class="pill muted">' + esc(t('noConsent')) + '</span>' : '') + (c.verified === false ? ' <span class="pill warn">' + esc(t('unverified')) + '</span>' : '') + (!c.gender ? ' <span class="pill muted">' + esc(t('noGender')) + '</span>' : '') + (c.bday ? ' <span class="pill">\uD83C\uDF82 ' + esc(bdayTxt(c.bday)) + '</span>' : '') +
         '<div class="meta"><span dir="ltr">' + esc(c.phone) + '</span> · ' + c.stamps + '/10 ' + esc(t('stamps')) + (c.lastStampAt ? ' · ' + esc(fmtDate(c.lastStampAt)) : '') + '</div><div class="bar"><i style="width:' + (c.stamps * 10) + '%"></i></div>' + giftHist(c.gifts) + '</div>' +
         '<div class="acts"><button class="btn small" type="button" data-send="' + esc(c.phone) + '" data-name="' + esc(c.verified === false ? '' : c.name) + '" data-gender="' + esc(c.gender || '') + '">' + esc(t('sendStampLink')) + '</button>' +
+        '<button class="btn small ghost" type="button" data-viewcard="' + esc(c.id) + '">' + esc(t('viewCard')) + '</button>' +
         (c.hasLogin ? '' : '<button class="btn small gold" type="button" data-login="' + esc(c.id) + '">' + esc(t('makeLogin')) + '</button>') +
         '<details class="more"><summary class="btn small ghost">⋯</summary><div class="acts">' +
         '<button class="btn small ghost" type="button" data-plus="' + esc(c.id) + '">' + esc(t('addStamp')) + '</button><button class="btn small ghost" type="button" data-minus="' + esc(c.id) + '">' + esc(t('removeStamp')) + '</button>' +
@@ -282,7 +320,10 @@ function tabBody(){
         '<div class="acts" style="margin-top:14px"><button class="btn small" id="aSave" type="button">' + esc(t('addBtn')) + '</button><button class="btn small ghost" id="aCancel" type="button">' + esc(t('cancel')) + '</button></div>' +
         '<div class="err" id="aErr" role="alert"></div></section>'
       : '<button class="btn addbtn" id="aOpen" type="button">' + ico('plus') + esc(t('addCustomer')) + '</button>';
+    var chips = ['all', 'pending', 'nologin', 'gift', 'near', 'idle'].map(function(k){ var n = k === 'all' ? d.customers.length : d.customers.filter(function(c){ return custFilter(c, k); }).length;
+      return '<button type="button" class="pill fchip' + (f === k ? ' on' : ' muted') + '" data-f="' + k + '">' + esc(t('f_' + k)) + ' · ' + n + '</button>'; }).join(' ');
     return addForm + '<div class="searchbox">' + ico('search', 'fi') + '<input type="search" id="q" placeholder="' + esc(t('search')) + '" value="' + esc(ADM.q) + '"></div>' +
+      '<div class="fchips">' + chips + '</div>' +
       '<h3 class="lhead">' + ico('clock') + esc(t('custList')) + ' <small>' + rows.length + '</small></h3><div class="list">' + (rows.join('') || '<p class="empty">' + esc(t('empty')) + '</p>') + '</div>';
   } else if(ADM.tab === 'recent'){
     var rv = d.reviews, k = rv.counts, neg = ADM.rv === 'neg';
@@ -397,6 +438,21 @@ function bindTab(){
   }); });
   each('[data-login]', function(b){ if(b.dataset.has && !confirm(t('confirmResetLogin'))) return; makeLogin(b.dataset.login, b); });
   each('[data-nologin]', function(b){ if(confirm(t('confirmDisableLogin'))) act(api('adminDisableCustomerLogin', SESSION, b.dataset.nologin), b, function(d){ d.customers.forEach(function(c){ if(c.id === b.dataset.nologin){ c.hasLogin = false; c.mustChange = false; } }); }); });
+  each('[data-f]', function(b){ ADM.f = b.dataset.f; document.getElementById('tabBody').innerHTML = tabBody(); bindTab(); });
+  each('[data-viewcard]', function(b){ viewCustCard(b.dataset.viewcard); });
+  function approveLocal(id){ return function(d){ d.customers.forEach(function(c){ if(c.id === id) c.signupPending = false; }); d.stats.signups = Math.max(0, (d.stats.signups || 0) - 1); }; }
+  each('[data-approve]', function(b){ act(api('adminApproveSignup', SESSION, b.dataset.approve), b, approveLocal(b.dataset.approve)); });
+  each('[data-reject]', function(b){
+    if(!confirm(fill(t(b.dataset.claim ? 'confirmRejectClaim' : 'confirmRejectNew'), b.dataset.name))) return;
+    act(api(b.dataset.claim ? 'adminDisableCustomerLogin' : 'adminDeleteCustomer', SESSION, b.dataset.reject), b);
+  });
+  var apAll = document.getElementById('apAll');
+  if(apAll) apAll.onclick = function(){
+    if(!confirm(t('confirmApproveAll'))) return;
+    apAll.disabled = true;
+    var ids = ADM.data.customers.filter(function(c){ return c.signupPending; }).map(function(c){ return c.id; });
+    ids.reduce(function(p, id){ return p.then(function(){ return api('adminApproveSignup', SESSION, id); }); }, Promise.resolve()).then(function(){ viewAdmin(); });
+  };
   each('[data-del]', function(b){ if(confirm(fill(t('confirmDelete'), b.dataset.name)) && confirm(t('deleteCustomer') + ' — ' + b.dataset.name + '?')) act(api('adminDeleteCustomer', SESSION, b.dataset.del), b); });
   each('[data-rot]', function(b){ if(confirm(t('confirmRotate'))){ ADM.flash = t('rotated'); act(api('adminRotateCardLink', SESSION, b.dataset.rot), b); } });
   var la = document.getElementById('lall');

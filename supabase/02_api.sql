@@ -14,34 +14,8 @@ begin;  -- كل الملف بمعاملة وحدة: إذا صار أي خطأ، 
 -- ================================================================= زوّار (بدون دخول)
 
 -- الانضمام للبرنامج. ما بيعطي طبعات. رقم مسجّل ما بيرجّع البطاقة.
-create or replace function public.join_program(p_phone text, p_name text, p_consent boolean, p_gender text, p_bday text default '')
-returns jsonb language plpgsql volatile security definer set search_path = app, pg_catalog as $$
-declare ip text := app.client_ip(); p text; n text; g text; b text; cid text;
-begin
-  if not app.hit_ip('pub', 120, 60) or not app.hit_ip('join', 10, 3600) then return app.err('RATE_LIMIT'); end if;
-  p := app.norm_phone(p_phone);
-  if p !~ '^05[0-9]{8}$' then return app.err('BAD_PHONE'); end if;
-  if not app.hit('joinp:' || p, 3, 3600) then return app.err('RATE_LIMIT'); end if;
-  -- كثير تسجيلات باليوم: تنبيه بسجل الرقابة بس (ما بنوقف الكل، عشان ما حدا يعطّل التسجيل)
-  if not app.hit('join:d:all', 300, 86400) and app.hit('join:d:alert', 1, 86400) then perform app.audit('join_flood', '', 'more than 300 joins today'); end if;
-  -- العدّاد فوق برّا هالبلوك: أي خطأ تحت ما بيلغي العد
-  begin
-  begin
-    n := app.clean_name(p_name);
-    b := app.clean_bday(p_bday);
-  exception when others then return app.err(sqlerrm); end;
-  if n = '' then return app.err('NEED_NAME'); end if;
-  g := app.clean_gender(p_gender);
-  if g = '' then return app.err('NEED_GENDER'); end if;
-  if p_consent is distinct from true then return app.err('NEED_CONSENT'); end if;
-  -- الرقم مش مؤكد لحد ما صاحبه يستعمل رابط وصله على واتساب.
-  -- نفس الرد بالظبط إذا الرقم جديد أو مسجّل: ما بنكشف مين زبون، وما بنعطي رابط بطاقة لحدا مش مؤكد
-  insert into app.customers(id, name, phone, source, consent_at, gender, bday) values (app.new_id(16), n, p, 'join', now(), g, b)
-  on conflict (phone) do nothing;
-  return jsonb_build_object('ok', true, 'joined', true);
-  exception when others then return app.err(sqlerrm);
-  end;
-end $$;
+-- الانضمام صار من خلال التسجيل مع كلمة سر (Edge Function: signup)
+drop function if exists public.join_program(text, text, boolean, text, text);
 
 create or replace function public.get_token_info(p_token text)
 returns jsonb language plpgsql volatile security definer set search_path = app, pg_catalog as $$
@@ -162,9 +136,14 @@ begin
     end if;
   end if;
   update app.customers set last_login_at = now() where id = c.id and (last_login_at is null or last_login_at < now() - interval '10 minutes');
+  -- سجّل لحاله على رقم كان عنده بطاقة من قبل: البطاقة بتبيّن بس بعد موافقة الإدارة (يمكن الرقم مش إله)
+  if c.signup_at is not null and c.approved_at is null and c.source <> 'app' then
+    return jsonb_build_object('ok', true, 'role', 'customer', 'name', c.name, 'mustChange', false, 'card', null, 'waitApproval', true, 'pending', '[]'::jsonb);
+  end if;
   return jsonb_build_object('ok', true, 'role', 'customer', 'name', c.name, 'mustChange', c.must_change,
     'card', case when c.must_change then null else app.card_json(c.id) end,
-    'pending', case when c.must_change then '[]'::jsonb else app.pending_for(c.phone) end);
+    -- طلبات اليوم للتقييم: بس لحساب موافَق عليه (أو حساب عملته الإدارة)
+    'pending', case when c.must_change or (c.signup_at is not null and c.approved_at is null) then '[]'::jsonb else app.pending_for(c.phone) end);
 exception when others then return app.err(sqlerrm);
 end $$;
 
@@ -196,6 +175,7 @@ begin
   select * into c from app.customers where user_id = uid;
   if not found then return app.err('NO_LOGIN'); end if;
   if c.must_change then return app.err('NO_SESSION'); end if;
+  if c.signup_at is not null and c.approved_at is null then return app.err('TOKEN_INVALID'); end if;
   -- الطلب لازم يكون إله هو (نفس رقم التلفون)، ومن اليوم، ولسا ما انقيّم
   if not app.is_hex(p_token, 14, 32) or not exists (select 1 from jsonb_array_elements(app.pending_for(c.phone)) e where e ->> 'token' = p_token) then
     if exists (select 1 from app.tokens where token = p_token and phone = c.phone and status = 'used') then return app.err('TOKEN_USED'); end if;
@@ -225,7 +205,8 @@ begin
       'stampsMonth', (select coalesce(sum(case when qty > 0 then qty else 1 end), 0) from fb where stamped and created_at >= m0),
       'avgRating', (select round(avg(rating)::numeric, 1) from fb where created_at >= m0),
       'pendingGifts', (select count(*) from app.rewards where status = 'available'),
-      'followUps', (select count(*) from fb where follow_up = 'needed')),
+      'followUps', (select count(*) from fb where follow_up = 'needed'),
+      'signups', (select count(*) from app.customers where signup_at is not null and approved_at is null)),
     'followUps', coalesce((select jsonb_agg(j order by created_at desc) from fbo where follow_up = 'needed'), '[]'),
     'reviews', jsonb_build_object(
       'positive', coalesce((select jsonb_agg(j order by created_at desc) from (select * from fbo where rating >= 4 order by created_at desc limit 200) x), '[]'),
@@ -249,7 +230,8 @@ begin
         'consent', c.consent_at is not null, 'verified', c.verified_at is not null, 'gender', c.gender, 'bday', c.bday,
         'gifts', coalesce((select jsonb_agg(jsonb_build_object('type', type, 'status', status, 'earnedAt', earned_at, 'redeemedAt', redeemed_at) order by earned_at desc)
                            from (select * from app.rewards r where r.customer_id = c.id order by earned_at desc limit 10) g), '[]'),
-        'hasLogin', c.user_id is not null, 'mustChange', c.user_id is not null and c.must_change, 'lastLoginAt', c.last_login_at)
+        'hasLogin', c.user_id is not null, 'mustChange', c.user_id is not null and c.must_change, 'lastLoginAt', c.last_login_at,
+        'signupPending', c.signup_at is not null and c.approved_at is null, 'signupAt', c.signup_at, 'claim', c.source <> 'app', 'totalStamps', c.total_stamps)
         order by coalesce(c.last_stamp_at, c.created_at) desc) from app.customers c), '[]'),
     'openTokens', coalesce((select jsonb_agg(jsonb_build_object('token', token, 'phone', phone, 'createdAt', created_at, 'note', note, 'qty', qty) order by created_at desc)
       from (select * from app.tokens where status = 'open' and expires_at > now() order by created_at desc limit 30) t), '[]'),
@@ -270,6 +252,11 @@ begin
   values (tk, p, now() + make_interval(hours => app.setting('TOKEN_HOURS')::int), app.clean(p_note, 100), q);
   perform app.audit('token_created', app.mask_phone(p), 'qty ' || q);
   select * into c from app.customers where phone = p;
+  -- سجّلتله طلب = إنت شفت الزبون صاحب الرقم ← التسجيل بيتوافق والرقم بيتأكد لحاله
+  if c.id is not null and c.signup_at is not null and c.approved_at is null then
+    update app.customers set approved_at = now(), verified_at = coalesce(verified_at, now()) where id = c.id returning * into c;
+    perform app.audit('signup_approved', app.mask_phone(p), 'by order');
+  end if;
   -- اسم من تسجيل غير مؤكد ممكن يكون من حدا ثاني: ما بنحطه برسالة الواتساب
   return jsonb_build_object('ok', true, 'token', tk, 'phone', p, 'qty', q,
     'customerName', case when c.verified_at is not null then c.name else '' end,
@@ -504,7 +491,7 @@ declare u uuid;
 begin
   select user_id into u from app.customers where id = p_customer_id for update;
   if not found then return app.err('CARD_NOT_FOUND'); end if;
-  update app.customers set user_id = null, must_change = false where id = p_customer_id;
+  update app.customers set user_id = null, must_change = false, signup_at = null, approved_at = null where id = p_customer_id;
   perform app.audit('cust_login_disabled', '', '');
   -- حساب إدارة ما بينحذف أبداً من هون
   if u is not null and exists (select 1 from app.staff where user_id = u) then u := null; end if;
@@ -553,11 +540,93 @@ do $$ begin
   end if;
 exception when others then raise notice 'default privileges: %', sqlerrm;
 end $$;
+-- ================================================================= تسجيل ذاتي (من Edge Function: signup)
+-- الحماية من الإغراق: حد لكل جهاز (IP)، لكل رقم، وسقف لعدد التسجيلات اللي بتستنى موافقة
+create or replace function public.svc_signup_prepare(p_phone text, p_name text, p_gender text, p_bday text, p_consent boolean, p_ip text)
+returns jsonb language plpgsql volatile security definer set search_path = app, pg_catalog as $$
+declare ip text := app.norm_ip(p_ip); f int := case when app.norm_ip(p_ip) = 'noip' then 20 else 1 end;
+  p text := app.norm_phone(p_phone); n text; g text; b text; c app.customers; waiting int;
+begin
+  if not app.hit('su:' || ip, 5 * f, 3600) or not app.hit('sud:' || ip, 20 * f, 86400) then return app.err('RATE_LIMIT'); end if;
+  if p !~ '^05[0-9]{8}$' then return app.err('BAD_PHONE'); end if;
+  if not app.hit('sup:' || p, 3, 86400) then return app.err('RATE_LIMIT'); end if;
+  begin
+  begin
+    n := app.clean_name(p_name);
+    b := app.clean_bday(p_bday);
+  exception when others then return app.err(sqlerrm); end;
+  if n = '' then return app.err('NEED_NAME'); end if;
+  g := app.clean_gender(p_gender);
+  if g = '' then return app.err('NEED_GENDER'); end if;
+  if p_consent is distinct from true then return app.err('NEED_CONSENT'); end if;
+  -- سقف: أكثر من 200 تسجيل بيستنوا موافقة ← التسجيل بيتسكّر مؤقتاً (هجوم) + تنبيه
+  select count(*) into waiting from app.customers where signup_at > now() - interval '7 days' and approved_at is null;
+  if waiting >= 200 then
+    if app.hit('su:alert', 1, 86400) then perform app.audit('signup_flood', '', waiting || ' waiting'); end if;
+    return app.err('SIGNUP_CLOSED');
+  end if;
+  if not app.hit('su:h:all', 60, 3600) and app.hit('su:h:alert', 1, 3600) then perform app.audit('signup_flood', '', 'more than 60 signups this hour'); end if;
+  select * into c from app.customers where phone = p for update;
+  if found then
+    if c.user_id is not null then return app.err('PHONE_TAKEN'); end if;
+    return jsonb_build_object('ok', true, 'customerId', c.id, 'existing', true);
+  end if;
+  insert into app.customers(id, name, phone, source, consent_at, gender, bday)
+  values (app.new_id(16), n, p, 'app', now(), g, b) returning * into c;
+  return jsonb_build_object('ok', true, 'customerId', c.id, 'existing', false);
+  exception when others then return app.err(sqlerrm);
+  end;
+end $$;
+
+create or replace function public.svc_signup_link(p_customer_id text, p_user_id uuid)
+returns jsonb language plpgsql volatile security definer set search_path = app, pg_catalog as $$
+begin
+  update app.customers set user_id = p_user_id, must_change = false, temp_hash = null, pass_set_at = now(),
+    signup_at = now(), approved_at = null, consent_at = coalesce(consent_at, now())
+  where id = p_customer_id and user_id is null;
+  if not found then return app.err('PHONE_TAKEN'); end if;
+  perform app.audit('signup', app.mask_phone((select phone from app.customers where id = p_customer_id)), '');
+  return jsonb_build_object('ok', true);
+exception when others then return app.err(sqlerrm);
+end $$;
+
+-- تسجيل فشل بنص الطريق: بنحذف بس زبون جديد فاضي انعمل هلأ
+create or replace function public.svc_signup_abort(p_customer_id text)
+returns jsonb language plpgsql volatile security definer set search_path = app, pg_catalog as $$
+begin
+  delete from app.customers where id = p_customer_id and source = 'app' and user_id is null and total_stamps = 0
+    and created_at > now() - interval '10 minutes';
+  return jsonb_build_object('ok', true);
+end $$;
+
+-- الإدارة: موافقة على تسجيل (الرفض من Edge Function: حذف أو إيقاف دخول)
+create or replace function public.admin_approve_signup(p_customer_id text)
+returns jsonb language plpgsql volatile security definer set search_path = app, pg_catalog as $$
+begin
+  if not app.is_admin() then return app.err('NO_SESSION'); end if;
+  update app.customers set approved_at = now(), verified_at = coalesce(verified_at, now())
+  where id = p_customer_id and signup_at is not null and approved_at is null;
+  if not found then return app.err('NOT_FOUND'); end if;
+  perform app.audit('signup_approved', app.mask_phone((select phone from app.customers where id = p_customer_id)), '');
+  return jsonb_build_object('ok', true);
+exception when others then return app.err(sqlerrm);
+end $$;
+
+-- الإدارة: بطاقة الزبون مثل ما هو بيشوفها
+create or replace function public.admin_card(p_customer_id text)
+returns jsonb language plpgsql stable security definer set search_path = app, pg_catalog as $$
+begin
+  if not app.is_admin() then return app.err('NO_SESSION'); end if;
+  if not exists (select 1 from app.customers where id = p_customer_id) then return app.err('NOT_FOUND'); end if;
+  return jsonb_build_object('ok', true, 'card', app.card_json(p_customer_id));
+exception when others then return app.err(sqlerrm);
+end $$;
+
 do $$ begin
   if exists (select 1 from pg_roles where rolname = 'anon') then
     execute 'revoke execute on all functions in schema public from anon, authenticated, service_role';
     -- زوّار + مسجّلين
-    execute 'grant execute on function public.join_program(text, text, boolean, text, text), public.get_token_info(text),
+    execute 'grant execute on function public.get_token_info(text),
       public.submit_feedback(text, int, text, text, boolean, text, text) to anon, authenticated';
     -- مسجّلين بس (كل دالة بتفحص الدور لحالها)
     execute 'grant execute on function public.me(), public.cust_password_changed(), public.cust_submit_feedback(text, int, text), public.am_i_admin(),
@@ -566,10 +635,11 @@ do $$ begin
       public.admin_import(jsonb), public.admin_adjust_stamps(text, int), public.admin_rename_customer(text, text),
       public.admin_rotate_card_link(text), public.admin_cancel_token(text),
       public.admin_redeem(text), public.admin_delete_feedback(text), public.admin_resolve_follow_up(text),
-      public.admin_save_settings(jsonb) to authenticated';
+      public.admin_save_settings(jsonb), public.admin_approve_signup(text), public.admin_card(text) to authenticated';
     -- Edge Function بس
     execute 'grant execute on function public.svc_login_prepare(text), public.svc_login_link(text, uuid), public.svc_auth_user_by_email(text),
-      public.svc_disable_login(text), public.svc_delete_customer(text) to service_role';
+      public.svc_disable_login(text), public.svc_delete_customer(text),
+      public.svc_signup_prepare(text, text, text, text, boolean, text), public.svc_signup_link(text, uuid), public.svc_signup_abort(text) to service_role';
   end if;
 end $$;
 

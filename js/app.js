@@ -13,7 +13,7 @@ function renderLogin(msg){
         '<button class="btn" id="lgo" type="submit">' + esc(t('loginBtn')) + '</button><div class="err" id="err" role="alert">' + esc(msg || '') + '</div>' +
       '</form>' +
       '<p class="sub hint" style="margin:14px 0 0">' + esc(t('forgotHint')) + '</p></section>' +
-    '<a class="btn ghost" href="' + esc(APP_URL + '?new=1') + '">' + esc(t('joinLink')) + '</a>' + howPanel() +
+    '<a class="btn gold" id="joinBtn" href="' + esc(APP_URL + '?new=1') + '">★ ' + esc(t('joinLink')) + '</a>' + howPanel() +
     '<p class="privacy" dir="ltr" style="opacity:.55">v' + esc(APP_VERSION) + '</p>';
   var u = document.getElementById('lu'), p = document.getElementById('lp'), sh = document.getElementById('lshow');
   var last = store('tp_user'); if(last) u.value = last;
@@ -81,6 +81,7 @@ function boot(){
   renderLogin();
 }
 try{ boot(); }catch(e){ if(window.__crash) __crash('B: ' + (e && e.message)); }
+setTimeout(function(){ try{ if(typeof scheduleInstallSheet === 'function') scheduleInstallSheet(); }catch(e){} }, 1200);
 
 // Service worker: التطبيق بيفتح أسرع وبيتثبّت على الشاشة الرئيسية
 if('serviceWorker' in navigator && location.protocol === 'https:'){

@@ -41,6 +41,8 @@ create table if not exists app.customers (
   user_id       uuid unique,                      -- حساب الدخول (Supabase Auth)
   must_change   boolean not null default false,   -- كلمة سر مؤقتة: لازم يغيّرها
   temp_hash     text,                             -- بصمة كلمة السر المؤقتة (من Auth): السيرفر بيعرف إذا الزبون غيّرها فعلاً
+  signup_at     timestamptz,                      -- سجّل لحاله من التطبيق (مع كلمة سر)
+  approved_at   timestamptz,                      -- الإدارة وافقت على التسجيل (أو سجّلتله طلب)
   pass_set_at   timestamptz,
   last_login_at timestamptz
 );
@@ -110,6 +112,12 @@ create table if not exists app.rate_limits (
   primary key (k, bucket)
 );
 
+-- ترقية تركيب قديم (لو 01 انشغّل قبل): أعمدة جديدة
+alter table app.customers add column if not exists temp_hash text;
+alter table app.customers add column if not exists signup_at timestamptz;
+alter table app.customers add column if not exists approved_at timestamptz;
+alter table app.staff add column if not exists require_mfa boolean not null default true;
+
 -- RLS على كل جدول، بدون ولا سياسة = ما حدا بيقدر يقرأ/يكتب مباشرة (حتى لو انكشف المخطط بالغلط)
 alter table app.customers   enable row level security;
 alter table app.tokens      enable row level security;
@@ -140,7 +148,7 @@ create or replace function app.err(e text) returns jsonb language sql immutable 
   select jsonb_build_object('ok', false, 'error',
     case when e = any (array['TOKEN_INVALID','TOKEN_EXPIRED','TOKEN_USED','NEED_NAME','NEED_CONSENT','BAD_RATING','BAD_PHONE',
       'BAD_URL','BAD_REVIEW_URL','BAD_NAME','NEED_GENDER','NEED_COMMENT','BAD_BDAY','EXISTS','NO_SESSION','FORBIDDEN',
-      'RATE_LIMIT','CARD_NOT_FOUND','NOT_FOUND','TEMP_EXPIRED','NO_LOGIN','BAD_REQUEST']) then e else 'DEFAULT' end)
+      'RATE_LIMIT','CARD_NOT_FOUND','NOT_FOUND','TEMP_EXPIRED','NO_LOGIN','BAD_REQUEST','PHONE_TAKEN','SIGNUP_CLOSED']) then e else 'DEFAULT' end)
 $$;
 create or replace function app.fail(code text) returns void language plpgsql set search_path = pg_catalog as $$
 begin raise exception using message = code, errcode = 'P0001'; end $$;
@@ -266,6 +274,15 @@ $$;
 -- IP الزائر (Supabase ورا Cloudflare: cf-connecting-ip ما بينزوّر)
 -- IP الزائر من Cloudflare بس (x-forwarded-for الزائر بيقدر يزوّره، فما بنستعمله).
 -- IPv6: بنعدّ كل /64 كعنوان واحد (عشان ما حدا يبدّل عناوين ويتخطى الحد)
+create or replace function app.norm_ip(p text) returns text language plpgsql immutable set search_path = pg_catalog as $$
+declare ip text := coalesce(p, '');
+begin
+  if ip !~ '^[0-9a-fA-F:.]{3,45}$' then return 'noip'; end if;
+  if position(':' in ip) > 0 then
+    ip := array_to_string((string_to_array(lower(ip), ':'))[1:4], ':') || '::/64';
+  end if;
+  return ip;
+end $$;
 create or replace function app.client_ip() returns text language plpgsql stable set search_path = pg_catalog as $$
 declare h jsonb; ip text;
 begin
@@ -357,8 +374,5 @@ do $$ begin
     execute 'revoke all on all functions in schema app from anon, authenticated';
   end if;
 end $$;
--- ترقية تركيب قديم (لو 01 انشغّل قبل): أعمدة جديدة
-alter table app.customers add column if not exists temp_hash text;
-alter table app.staff add column if not exists require_mfa boolean not null default true;
 
 commit;

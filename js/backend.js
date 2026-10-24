@@ -24,10 +24,11 @@ function clearAuthStore(){ try{ sessionStorage.removeItem('tp_admin'); sessionSt
 
 // اسم الدالة بالتطبيق ← [دالة الداتابيس، أسماء المتغيرات، هل أول متغير هو "جلسة" قديمة (بنتجاهله)]
 var RPC_MAP = {
-  joinProgram:            ['join_program', ['p_phone', 'p_name', 'p_consent', 'p_gender', 'p_bday']],
   getTokenInfo:           ['get_token_info', ['p_token']],
   submitFeedback:         ['submit_feedback', ['p_token', 'p_rating', 'p_comment', 'p_name', 'p_consent', 'p_gender', 'p_bday']],
   custRate:               ['cust_submit_feedback', ['p_token', 'p_rating', 'p_comment']],
+  adminApproveSignup:     ['admin_approve_signup', ['p_customer_id'], true],
+  adminCard:              ['admin_card', ['p_customer_id'], true],
   adminDashboard:         ['admin_dashboard', [], true],
   adminCreateToken:       ['admin_create_token', ['p_phone', 'p_note', 'p_qty'], true],
   adminAddCustomer:       ['admin_add_customer', ['p_name', 'p_phone', 'p_gender', 'p_bday'], true],
@@ -57,7 +58,7 @@ function customerEmail(phone){ return phone + '@' + CUSTOMER_EMAIL_DOMAIN; }
 var COMMON_PW = ['12345678', '123456789', '1234567890', '11111111', '00000000', '87654321', '12341234', 'password', 'passw0rd', 'qwerty123', 'qwertyui', 'abcd1234', 'iloveyou', 'pizza123', 'pizza1234', 'tabooni', 'tabooni1', 'tabooni123', 'aaaaaaaa'];
 function strongPass(p, phone){
   p = String(p || ''); phone = String(phone || '');
-  return p.length >= 8 && p.length <= 72 && !/^(.)\1+$/.test(p) && (!phone || (p.indexOf(phone) < 0 && p.indexOf(phone.slice(-7)) < 0)) &&
+  return p.length >= 8 && p.length <= 72 && /[A-Za-z\u0600-\u06FF\u0590-\u05FF]/.test(p) && /\d/.test(p) && !/^(.)\1+$/.test(p) && (!phone || (p.indexOf(phone) < 0 && p.indexOf(phone.slice(-7)) < 0)) &&
     COMMON_PW.indexOf(p.toLowerCase()) < 0 && '01234567890123456789'.indexOf(p) < 0 && '98765432109876543210'.indexOf(p) < 0;
 }
 // عميل منفصل (بدون حفظ) للتأكد من كلمة السر الحالية وتغييرها، بدون ما نلمس الجلسة الأساسية
@@ -106,7 +107,7 @@ async function sbCall(fn, args){
       }
       if(d.role === 'admin'){ moveSessionToTab(); return {ok:true, role:'admin', session:'sb'}; }
       if(d.role === 'admin_mfa') return {ok:true, role:'mfa'};       // الخطوة الثانية: كود من تطبيق المصادقة
-      return {ok:true, role:'customer', token:'sb', mustChange: !!d.mustChange, name: d.name, card: d.card, pending: d.pending || []};
+      return {ok:true, role:'customer', token:'sb', mustChange: !!d.mustChange, name: d.name, card: d.card, pending: d.pending || [], waitApproval: !!d.waitApproval};
     }
     // ---- التحقق بخطوتين للإدارة (TOTP: Google Authenticator / Microsoft Authenticator)
     if(fn === 'mfaStart'){
@@ -128,6 +129,20 @@ async function sbCall(fn, args){
       if(me3.error || d3.role !== 'admin') return {ok:false, error:'NO_SESSION'};
       moveSessionToTab();
       return {ok:true, role:'admin', session:'sb'};
+    }
+    // ---- اشتراك ذاتي: الحساب بينعمل بالسيرفر (Edge Function)، وبعدها دخول عادي
+    if(fn === 'signup'){
+      var b = args[0] || {};
+      var su = await SB.functions.invoke('admin-users', { body: { action:'signup', name:b.name, phone:b.phone, gender:b.gender, bday:b.bday, password:b.password, consent:b.consent, website:b.website, ms:b.ms } });
+      var sd = su.data;
+      if(su.error){ try{ sd = await su.error.context.json(); }catch(x){ return sbErr(su.error); } }
+      if(!sd || !sd.ok) return sd || {ok:false, error:'NETWORK'};
+      clearAuthStore();
+      var si = await SB.auth.signInWithPassword({ email: customerEmail(b.phone), password: b.password });
+      if(si.error) return {ok:false, error:'BAD_LOGIN'};
+      var m = await SB.rpc('me'), md = m.data || {};
+      if(m.error || !md.ok) return {ok:false, error:'DB_SETUP'};
+      return {ok:true, role:'customer', token:'sb', mustChange:false, name: md.name, card: md.card, pending: md.pending || [], waitApproval: !!md.waitApproval};
     }
     if(fn === 'me' || fn === 'custMe'){
       var s2 = await SB.auth.getSession();
