@@ -135,14 +135,11 @@ async function sbCall(fn, args){
       var b = args[0] || {};
       var su = await SB.functions.invoke('admin-users', { body: { action:'signup', name:b.name, phone:b.phone, gender:b.gender, bday:b.bday, password:b.password, consent:b.consent, website:b.website, ms:b.ms } });
       var sd = su.data;
-      if(su.error){ try{ sd = await su.error.context.json(); }catch(x){ return sbErr(su.error); } }
-      if(!sd || !sd.ok) return sd || {ok:false, error:'NETWORK'};
-      clearAuthStore();
-      var si = await SB.auth.signInWithPassword({ email: customerEmail(b.phone), password: b.password });
-      if(si.error) return {ok:false, error:'BAD_LOGIN'};
-      var m = await SB.rpc('me'), md = m.data || {};
-      if(m.error || !md.ok) return {ok:false, error:'DB_SETUP'};
-      return {ok:true, role:'customer', token:'sb', mustChange:false, name: md.name, card: md.card, pending: md.pending || [], waitApproval: !!md.waitApproval};
+      if(su.error){ try{ sd = await su.error.context.json(); }catch(x){ return {ok:false, error:'SIGNUP_SETUP'}; } }
+      if(!sd) return {ok:false, error:'NETWORK'};
+      // الدالة بالسيرفر قديمة أو مش مضبوطة (مش مشكلة عند الزبون)
+      if(!sd.ok && /^(NO_SESSION|FORBIDDEN|NOT_CONFIGURED|BAD_REQUEST|CARD_NOT_FOUND)$/.test(sd.error || '')) return {ok:false, error:'SIGNUP_SETUP'};
+      return sd.ok ? {ok:true} : sd;
     }
     if(fn === 'me' || fn === 'custMe'){
       var s2 = await SB.auth.getSession();

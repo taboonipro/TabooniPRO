@@ -46,12 +46,21 @@ function viewJoin(keep){
     var btn = this; btn.disabled = true; btn.textContent = t('sending');
     api('signup', {name:nm.value.trim(), phone:p, gender:pp.gender, bday:pp.bday, password:pw, consent:true, website:document.getElementById('jw').value, ms:Date.now() - JOIN_T0}).then(function(r){
       if(!r.ok){ btn.disabled = false; btn.textContent = t('joinBtn'); err.textContent = errText(r.error); return; }
-      store('tp_user', p);
-      CTOKEN = r.token; store('tp_ctok', CTOKEN);
-      try{ history.replaceState(null, '', location.pathname); }catch(e){}   // بدون ?new=1: الـ Refresh بيفتح البطاقة
-      showMine(r, t('welcome'));
+      store('tp_user', p);   // رقمه بيكون جاهز بشاشة الدخول
+      try{ history.replaceState(null, '', location.pathname); }catch(e){}
+      viewSignedUp(nm.value.trim());
     });
   };
+}
+// "تم التسجيل بنجاح" ← بعد ثواني رجوع لحاله لشاشة الدخول
+function viewSignedUp(name){
+  $app.className = 'wrap';
+  $app.innerHTML = header() + '<section class="panel done-panel" role="status"><div class="done-check" aria-hidden="true">✓</div>' +
+    '<h1>' + esc(t('signedUpTitle')) + '</h1><p class="sub">' + esc(fill(t('signedUpText'), name)) + '</p>' +
+    '<div class="done-bar"><i></i></div><button class="btn" id="goLogin" type="button">' + esc(t('loginBtn')) + '</button></section>';
+  var go = function(){ clearTimeout(tm); renderLogin(); };
+  var tm = setTimeout(go, 3500);
+  document.getElementById('goLogin').onclick = go;
 }
 function consentBox(){
   return '<label class="consent"><input type="checkbox" id="cs"> <span>' + esc(t('consent')) + '</span></label>';

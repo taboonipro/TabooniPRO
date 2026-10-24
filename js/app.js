@@ -5,7 +5,11 @@ function renderLogin(msg){
   PAGE = 'customer';
   $app.className = 'wrap';
   $app.innerHTML = demoBar() + header() +
-    '<section class="panel login"><h1>' + esc(t('loginTitle')) + '</h1><p class="sub">' + esc(t('loginSub')) + '</p>' +
+    '<section class="panel login"><h1>' + esc(t('loginTitle')) + '</h1>' +
+      // زبون جديد: الاشتراك وكيف بتاخذ طبعة، أول إشي تحت العنوان
+      '<a class="btn gold" id="joinBtn" href="' + esc(APP_URL + '?new=1') + '">★ ' + esc(t('joinLink')) + '</a>' + howPanel() +
+      '<div class="orline"><span>' + esc(t('orLogin')) + '</span></div>' +
+      '<p class="sub">' + esc(t('loginSub')) + '</p>' +
       '<form id="lf" autocomplete="on" novalidate>' +
         '<label for="lu">' + esc(t('userLabel')) + '</label><input id="lu" name="username" type="text" inputmode="text" dir="ltr" autocomplete="username" autocapitalize="none" spellcheck="false" maxlength="64" placeholder="' + esc(t('userPh')) + '">' +
         '<label for="lp">' + esc(t('passLabel')) + '</label><div class="passrow"><input id="lp" name="password" type="password" dir="ltr" autocomplete="current-password" maxlength="64">' +
@@ -13,7 +17,6 @@ function renderLogin(msg){
         '<button class="btn" id="lgo" type="submit">' + esc(t('loginBtn')) + '</button><div class="err" id="err" role="alert">' + esc(msg || '') + '</div>' +
       '</form>' +
       '<p class="sub hint" style="margin:14px 0 0">' + esc(t('forgotHint')) + '</p></section>' +
-    '<a class="btn gold" id="joinBtn" href="' + esc(APP_URL + '?new=1') + '">★ ' + esc(t('joinLink')) + '</a>' + howPanel() +
     '<p class="privacy" dir="ltr" style="opacity:.55">v' + esc(APP_VERSION) + '</p>';
   var u = document.getElementById('lu'), p = document.getElementById('lp'), sh = document.getElementById('lshow');
   var last = store('tp_user'); if(last) u.value = last;
