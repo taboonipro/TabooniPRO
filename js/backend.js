@@ -135,11 +135,20 @@ async function sbCall(fn, args){
       var b = args[0] || {};
       var su = await SB.functions.invoke('admin-users', { body: { action:'signup', name:b.name, phone:b.phone, gender:b.gender, bday:b.bday, password:b.password, consent:b.consent, website:b.website, ms:b.ms } });
       var sd = su.data;
-      if(su.error){ try{ sd = await su.error.context.json(); }catch(x){ return {ok:false, error:'SIGNUP_SETUP'}; } }
+      if(su.error){ try{ sd = await su.error.context.json(); }catch(x){ var st = su.error && su.error.context && su.error.context.status; return {ok:false, error:'SIGNUP_SETUP', detail: (su.error.name || 'ERR') + (st ? ' ' + st : '')}; } }
       if(!sd) return {ok:false, error:'NETWORK'};
       // الدالة بالسيرفر قديمة أو مش مضبوطة (مش مشكلة عند الزبون)
-      if(!sd.ok && /^(NO_SESSION|FORBIDDEN|NOT_CONFIGURED|BAD_REQUEST|CARD_NOT_FOUND)$/.test(sd.error || '')) return {ok:false, error:'SIGNUP_SETUP'};
+      if(!sd.ok && /^(NO_SESSION|FORBIDDEN|NOT_CONFIGURED|BAD_REQUEST|CARD_NOT_FOUND)$/.test(sd.error || '')) return {ok:false, error:'SIGNUP_SETUP', detail: sd.error};
       return sd.ok ? {ok:true} : sd;
+    }
+    // ---- فحص السيرفر: نسخة الداتابيس + نسخة الدالة admin-users
+    if(fn === 'health'){
+      var out = {ok:true, app: APP_VERSION, db:'', fn:'', signup:false, mfa:false};
+      try{ var h = await SB.rpc('admin_health'); if(h.data && h.data.ok){ out.db = h.data.db; out.signup = !!h.data.signup; out.mfa = !!h.data.mfa; } }catch(x){}
+      try{ var pg = await SB.functions.invoke('admin-users', { body: { action:'ping' } }); var pd = pg.data;
+        if(pg.error){ try{ pd = await pg.error.context.json(); }catch(y){ pd = null; } }
+        out.fn = pd && pd.fn ? pd.fn : (pd && pd.error ? 'old' : ''); }catch(x){}
+      return out;
     }
     if(fn === 'me' || fn === 'custMe'){
       var s2 = await SB.auth.getSession();

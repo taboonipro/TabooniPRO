@@ -24,6 +24,7 @@ const ANON_KEY = Deno.env.get('SUPABASE_ANON_KEY') || '';
 const SERVICE_KEY = Deno.env.get('SUPABASE_SERVICE_ROLE_KEY') || '';
 const ALLOWED = (Deno.env.get('ALLOWED_ORIGINS') || '').split(',').map((s) => s.trim()).filter(Boolean);
 // إيميل داخلي للزبون (مش إيميل حقيقي): رقم التلفون + دومين محجوز ما حدا بيقدر يملكه
+const FN_VERSION = '1.17';   // لازم يطابق رقم التطبيق (APP_VERSION) والداتابيس (app.db_version)
 const CUSTOMER_EMAIL_DOMAIN = 'tabooni.invalid';
 const ABC = 'abcdefghjkmnpqrstuvwxyz23456789'; // بدون 0/O و 1/l/I
 
@@ -80,6 +81,9 @@ export async function handler(req) {
   const action = typeof body.action === 'string' ? body.action : '';
   const admin = createClient(SUPABASE_URL, SERVICE_KEY, { auth: { persistSession: false, autoRefreshToken: false } });
   const del = async (uid) => { if (uid) { try { await admin.auth.admin.deleteUser(uid); } catch (_e) { /* الحساب مش مربوط، فما بيقدر يشوف إشي */ } } };
+
+  // ---- رقم النسخة (فحص التركيب)
+  if (action === 'ping') return json({ ok: true, fn: FN_VERSION }, origin);
 
   // ---- تسجيل ذاتي (بدون دخول)
   if (action === 'signup') {

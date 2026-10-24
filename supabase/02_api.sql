@@ -612,6 +612,21 @@ begin
 exception when others then return app.err(sqlerrm);
 end $$;
 
+-- رقم نسخة الداتابيس (لازم يطابق رقم التطبيق ورقم الدالة admin-users)
+create or replace function app.db_version() returns text language sql immutable set search_path = pg_catalog as $$ select '1.17'::text $$;
+
+-- الإدارة: حالة السيرفر (التطبيق بيقارن النسخ وبينبّه إذا إشي مش محدّث)
+create or replace function public.admin_health()
+returns jsonb language plpgsql stable security definer set search_path = app, pg_catalog as $$
+begin
+  if not app.is_admin() then return app.err('NO_SESSION'); end if;
+  return jsonb_build_object('ok', true, 'db', app.db_version(),
+    'signup', exists (select 1 from pg_proc p join pg_namespace n on n.oid = p.pronamespace where n.nspname = 'public' and p.proname = 'svc_signup_prepare'),
+    'oldJoin', exists (select 1 from pg_proc p join pg_namespace n on n.oid = p.pronamespace where n.nspname = 'public' and p.proname = 'join_program'),
+    'mfa', not exists (select 1 from app.staff where not require_mfa));
+exception when others then return app.err(sqlerrm);
+end $$;
+
 -- الإدارة: بطاقة الزبون مثل ما هو بيشوفها
 create or replace function public.admin_card(p_customer_id text)
 returns jsonb language plpgsql stable security definer set search_path = app, pg_catalog as $$
@@ -635,7 +650,7 @@ do $$ begin
       public.admin_import(jsonb), public.admin_adjust_stamps(text, int), public.admin_rename_customer(text, text),
       public.admin_rotate_card_link(text), public.admin_cancel_token(text),
       public.admin_redeem(text), public.admin_delete_feedback(text), public.admin_resolve_follow_up(text),
-      public.admin_save_settings(jsonb), public.admin_approve_signup(text), public.admin_card(text) to authenticated';
+      public.admin_save_settings(jsonb), public.admin_approve_signup(text), public.admin_card(text), public.admin_health() to authenticated';
     -- Edge Function بس
     execute 'grant execute on function public.svc_login_prepare(text), public.svc_login_link(text, uuid), public.svc_auth_user_by_email(text),
       public.svc_disable_login(text), public.svc_delete_customer(text),

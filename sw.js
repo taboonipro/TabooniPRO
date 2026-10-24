@@ -1,6 +1,6 @@
 /* Service worker: بيخزّن ملفات التطبيق (مش البيانات). البيانات دايماً من السيرفر.
  * لما تحدّث ملفات التطبيق: غيّر رقم VERSION عشان التلفونات تاخذ النسخة الجديدة. */
-var VERSION = 'tabooni-v1.14';   // نفس رقم APP_VERSION
+var VERSION = 'tabooni-v1.17';   // نفس رقم APP_VERSION
 var FILES = ['./', 'index.html', 'config.js', 'css/app.css', 'js/guard.js', 'js/qrcode.js', 'js/vendor/supabase.js', 'js/shared.js', 'js/backend.js', 'js/customer.js', 'js/admin.js', 'js/app.js',
   'assets/logo.webp', 'assets/pizza.webp', 'assets/boat.webp', 'assets/icon-192.png', 'assets/favicon-32.png', 'manifest.webmanifest'];
 self.addEventListener('install', function(e){

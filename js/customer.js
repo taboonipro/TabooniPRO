@@ -45,7 +45,7 @@ function viewJoin(keep){
     if(!document.getElementById('cs').checked){ err.textContent = errText('NEED_CONSENT'); return; }
     var btn = this; btn.disabled = true; btn.textContent = t('sending');
     api('signup', {name:nm.value.trim(), phone:p, gender:pp.gender, bday:pp.bday, password:pw, consent:true, website:document.getElementById('jw').value, ms:Date.now() - JOIN_T0}).then(function(r){
-      if(!r.ok){ btn.disabled = false; btn.textContent = t('joinBtn'); err.textContent = errText(r.error); return; }
+      if(!r.ok){ btn.disabled = false; btn.textContent = t('joinBtn'); err.textContent = errText(r.error) + (r.detail ? ' [' + r.detail + ']' : ''); return; }
       store('tp_user', p);   // رقمه بيكون جاهز بشاشة الدخول
       try{ history.replaceState(null, '', location.pathname); }catch(e){}
       viewSignedUp(nm.value.trim());

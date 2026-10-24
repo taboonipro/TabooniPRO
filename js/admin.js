@@ -57,6 +57,8 @@ function viewAdmin(){
     if(!ADM.tab) ADM.tab = r.followUps.length ? 'follow' : r.gifts.length ? 'gifts' : 'customers';
     if(IS_LIVE) GREVIEW = r.settings.GOOGLE_REVIEW_URL || '';
     renderAdmin();
+    // مرة بالجلسة: فحص إنه الداتابيس والدالة على نفس نسخة التطبيق
+    if(IS_LIVE && !ADM.health){ ADM.health = {pending:true}; api('health').then(function(h){ ADM.health = h; renderAdmin(); }); }
   });
 }
 function renderAdmin(){
@@ -70,7 +72,7 @@ function renderAdmin(){
       '<div class="hacts"><div class="langseg" role="group"><button type="button" class="lseg' + (LANG === 'ar' ? ' on' : '') + '" data-lang="ar">' + (LANG === 'ar' ? ico('globe') : '') + 'عربي</button><button type="button" class="lseg' + (LANG === 'he' ? ' on' : '') + '" data-lang="he">' + (LANG === 'he' ? ico('globe') : '') + 'עברית</button></div>' +
       '<button class="ibtn" id="rf" type="button" title="' + esc(t('refresh')) + '" aria-label="' + esc(t('refresh')) + '">' + ico('refresh') + '</button>' +
       '<button class="ibtn" id="lo" type="button" title="' + esc(t('logout')) + '" aria-label="' + esc(t('logout')) + '">' + ico('logout') + '</button></div></header>' +
-    (ADM.flash ? '<div class="toast gift" role="status">' + esc(ADM.flash) + '</div>' : '') +
+    (ADM.flash ? '<div class="toast gift" role="status">' + esc(ADM.flash) + '</div>' : '') + healthWarn() +
     '<div class="stats">' +
       stat(st.followUps, t('sFollow'), st.followUps ? 'alert' : '', 'star', 'follow') +
       stat(st.pendingGifts, t('sGifts'), st.pendingGifts ? 'goldb' : '', 'gift', 'gifts') +
@@ -143,6 +145,22 @@ function viewCustCard(id){
       '<div class="grid">' + slots + '</div><button class="btn small ghost" type="button" id="qc" style="margin-top:14px">' + esc(t('close')) + '</button>';
     document.getElementById('qc').onclick = function(){ dlg.close(); };
   });
+}
+// حالة السيرفر: التطبيق، الداتابيس (SQL)، الدالة admin-users. لازم كلهم نفس الرقم
+function healthRows(){
+  var h = ADM.health; if(!h || h.pending) return null;
+  return [['hApp', 'v' + h.app, true], ['hDb', h.db ? 'v' + h.db : t('hMissing'), h.db === h.app], ['hFn', h.fn && h.fn !== 'old' ? 'v' + h.fn : t('hOld'), h.fn === h.app], ['hMfa', h.mfa ? '✓' : '✗', h.mfa]];
+}
+function healthWarn(){
+  var r = healthRows(); if(!r) return '';
+  var bad = r.filter(function(x){ return !x[2] && x[0] !== 'hMfa'; });
+  if(!bad.length) return '';
+  return '<div class="toast warn-toast" role="alert"><b>' + esc(t('hWarn')) + '</b><br>' + bad.map(function(x){ return esc(t(x[0])) + ': ' + esc(x[1]) + ' ← ' + esc(t(x[0] + 'Fix')); }).join('<br>') + '</div>';
+}
+function healthPanel(){
+  var r = healthRows();
+  return '<section class="panel"><h2 class="sec">' + esc(t('hTitle')) + '</h2>' + (r ? '<div class="list">' + r.map(function(x){
+    return '<div class="item" style="padding:10px 14px"><b>' + esc(t(x[0])) + '</b><span class="pill ' + (x[2] ? 'ok' : 'warn') + '" dir="ltr">' + (x[2] ? '✓ ' : '✗ ') + esc(x[1]) + '</span></div>'; }).join('') + '</div>' : '<p class="sub">…</p>') + '</section>';
 }
 function hint(k){ return '<p class="sub hint">' + esc(t(k)) + '</p>'; }
 function waBtn(phone, msg, cls, label, extra){ return phone ? '<a class="btn small wa ' + (cls || '') + '" target="_blank" rel="noopener" href="' + esc(waLink(phone, msg)) + '"' + (extra || '') + '>' + CHAT_ICO + esc(label || t('whatsapp')) + '</a>' : ''; }
@@ -360,7 +378,7 @@ function tabBody(){
         '<label for="p1">' + esc(t('curPin')) + '</label><input id="p1" type="password" autocomplete="current-password" dir="ltr">' +
         '<label for="p2">' + esc(t('newPin')) + '</label><input id="p2" type="password" autocomplete="new-password" minlength="8" dir="ltr">' +
         '<button class="btn ghost" id="cpin" type="button">' + esc(t('changePin')) + '</button><div class="err" id="perr" role="alert"></div>' +
-        '<button class="btn ghost danger" id="lall" type="button">' + esc(t('logoutAll')) + '</button></section>';
+        '<button class="btn ghost danger" id="lall" type="button">' + esc(t('logoutAll')) + '</button></section>' + healthPanel();
   }
   return '<div class="list">' + (rows.join('') || '<p class="empty">' + esc(t('empty')) + '</p>') + '</div>';
 }
