@@ -1,1 +1,37 @@
+# طابوني برو VIP: إبقاء مشروع Supabase المجاني صاحي
+# الخطة المجانية بتوقف (Pause) المشروع بعد 7 أيام بدون استعمال.
+# هاد الملف بيخلي GitHub يعمل طلب صغير على الداتابيس مرتين بالأسبوع (الإثنين والخميس).
+# ما بيحتاج أي إعداد: بياخذ الرابط والمفتاح العام (anon) من config.js
+name: Supabase keep-alive
 
+on:
+  schedule:
+    - cron: '17 7 * * 1,4'    # الإثنين والخميس 07:17 UTC (9:17 أو 10:17 بتوقيت البلاد)
+  workflow_dispatch:          # زر "Run workflow" للتجربة اليدوية
+
+permissions:
+  contents: read
+
+jobs:
+  ping:
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Ping Supabase
+        run: |
+          URL=$(grep -oP "SUPABASE_URL:\s*'\K[^']+" config.js)
+          KEY=$(grep -oP "SUPABASE_ANON_KEY:\s*'\K[^']+" config.js)
+          if [ -z "$URL" ] || [ -z "$KEY" ]; then echo "config.js ناقص"; exit 1; fi
+          # طلب حقيقي على الداتابيس (بيكتب سطر صغير بعدّاد الحدود) = استعمال
+          for i in 1 2 3; do
+            CODE=$(curl -s -o resp.txt -w "%{http_code}" -X POST "$URL/rest/v1/rpc/get_token_info" \
+              -H "apikey: $KEY" -H "Authorization: Bearer $KEY" -H "Content-Type: application/json" \
+              -d '{"p_token":"00000000000000000000000000000000"}')
+            echo "try $i → HTTP $CODE: $(cat resp.txt)"
+            [ "$CODE" = "200" ] && exit 0
+            sleep 20
+          done
+          echo "Supabase ما رد. افتح المشروع بـ supabase.com وتأكد إنه مش Paused."
+          exit 1
