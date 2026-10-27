@@ -44,7 +44,9 @@ function viewJoin(keep){
     if(pw !== pw2){ err.textContent = t('passMismatch'); document.getElementById('jp2').focus(); return; }
     if(!document.getElementById('cs').checked){ err.textContent = errText('NEED_CONSENT'); return; }
     var btn = this; btn.disabled = true; btn.textContent = t('sending');
-    api('signup', {name:nm.value.trim(), phone:p, gender:pp.gender, bday:pp.bday, password:pw, consent:true, website:document.getElementById('jw').value, ms:Date.now() - JOIN_T0}).then(function(r){
+    var form = {name:nm.value.trim(), phone:p, gender:pp.gender, bday:pp.bday, password:pw, consent:true, website:document.getElementById('jw').value, ms:Date.now() - JOIN_T0};
+    api('signup', form).then(function(r){
+      if(!r.ok && r.error === 'PHONE_UNVERIFIED'){ btn.disabled = false; btn.textContent = t('joinBtn'); err.textContent = ''; return takeoverBox(form); }
       if(!r.ok){ btn.disabled = false; btn.textContent = t('joinBtn'); err.textContent = errText(r.error) + (r.detail ? ' [' + r.detail + ']' : ''); return; }
       store('tp_user', p);   // رقمه بيكون جاهز بشاشة الدخول
       try{ history.replaceState(null, '', location.pathname); }catch(e){}
@@ -52,6 +54,64 @@ function viewJoin(keep){
     });
   };
 }
+/* ---------- تأكيد الرقم بالواتساب ----------
+   الزبون بيكبس ← الواتساب بيفتح على رقم طابوني برو والرسالة جاهزة فيها رمز ← بيكبس إرسال.
+   السيرفر بيستلم الرسالة من Meta (مع رقم المرسل الحقيقي) وبيأكّد. التطبيق بيفحص كل كم ثانية. */
+// الرسالة فيها رابط: الإدارة بتكبس عليه من جوّا الواتساب ← شاشة موافقة بكبسة (?ok= تأكيد، ?tk= استرجاع رقم)
+function waHref(v){
+  var tk = v.kind === 'tk';
+  var msg = t(tk ? 'waTakeMsg' : 'waVerifyMsg').replace('{code}', v.code) + '\n' + t('waApproveLink') + ' ' + APP_URL + '?' + (tk ? 'tk' : 'ok') + '=' + v.code;
+  return 'https://wa.me/' + encodeURIComponent(v.wa) + '?text=' + encodeURIComponent(msg);
+}
+function verifyBox(v, title, text, btn){
+  return '<section class="panel verify" id="vbox"><h2 class="sec">' + esc(title || t('verifyTitle')) + '</h2><p class="sub" style="margin-bottom:10px">' + esc(text || t('verifyText')) + '</p>' +
+    '<a class="btn wa" id="vGo" target="_blank" rel="noopener" href="' + esc(waHref(v)) + '">' + CHAT_ICO + esc(btn || t('verifyBtn')) + '</a>' +
+    '<p class="sub vwait" id="vWait" hidden>' + esc(t('verifyWaiting')) + '</p>' +
+    '<p class="sub" style="margin:8px 0 0;font-size:13px">' + esc(t('verifyCodeIs')) + ' <b dir="ltr" style="letter-spacing:2px">' + esc(v.code) + '</b></p></section>';
+}
+// بيفحص كل 3-4 ثواني (وفوراً لما يرجع من الواتساب) لحد ما check يرجّع true أو تخلص المدة
+var VPOLL = null;
+function pollVerify(check, done){
+  stopPoll();
+  var t0 = Date.now(), busy = false;
+  function tick(){
+    if(busy || document.hidden) return;
+    if(Date.now() - t0 > 30 * 60 * 1000) return stopPoll();
+    busy = true;
+    check().then(function(ok){ busy = false; if(ok){ stopPoll(); done(); } }, function(){ busy = false; });
+  }
+  VPOLL = { iv: setInterval(tick, 3500), vis: function(){ if(!document.hidden) tick(); } };
+  document.addEventListener('visibilitychange', VPOLL.vis);
+}
+function stopPoll(){ if(VPOLL){ clearInterval(VPOLL.iv); document.removeEventListener('visibilitychange', VPOLL.vis); VPOLL = null; } }
+function bindVerify(check, done){
+  var go = document.getElementById('vGo'); if(!go) return;
+  go.addEventListener('click', function(){ var w = document.getElementById('vWait'); if(w) w.hidden = false; });
+  pollVerify(check, done);
+}
+// صاحب الرقم بيسترجع رقمه من حساب مش مؤكد، وبعدها التسجيل بيكمل لحاله
+function takeoverBox(form){
+  var err = document.getElementById('err');
+  api('startTakeover', form.phone).then(function(r){
+    if(!r.ok){ err.textContent = errText(r.error === 'NOT_FOUND' ? 'PHONE_TAKEN' : r.error); return; }
+    r.kind = 'tk';
+    var holder = document.getElementById('tkBox');
+    if(!holder){ holder = document.createElement('div'); holder.id = 'tkBox'; err.parentNode.insertBefore(holder, err.nextSibling); }
+    holder.innerHTML = verifyBox(r, t('takeTitle'), t('takeText'), t('takeBtn'));
+    holder.scrollIntoView({behavior:'smooth', block:'center'});
+    bindVerify(function(){ return api('takeoverStatus', form.phone, r.code).then(function(s){ return !!(s && s.ok && s.done); }); }, function(){
+      holder.innerHTML = '<div class="toast" role="status">' + esc(t('verifiedOk')) + '</div>';
+      form.ms = Math.max(form.ms, 5000);
+      api('signup', form).then(function(r2){
+        if(!r2.ok){ err.textContent = errText(r2.error); return; }
+        store('tp_user', form.phone);
+        try{ history.replaceState(null, '', location.pathname); }catch(e){}
+        viewSignedUp(form.name);
+      });
+    });
+  });
+}
+
 // "تم التسجيل بنجاح" ← بعد ثواني رجوع لحاله لشاشة الدخول
 function viewSignedUp(name){
   $app.className = 'wrap';
@@ -160,10 +220,11 @@ function renderCard(card, opts){
   var contact = /^05\d{8}$/.test(opts.contactPhone || '') ? '<section class="panel review"><h2 class="sec">' + esc(t('contactTitle')) + '</h2><p class="sub" style="margin-bottom:0">' + esc(t('contactText')) + '</p>' +
     '<a class="btn wa" target="_blank" rel="noopener" href="' + esc(waLink(opts.contactPhone, t('contactMsg') + (opts.comment ? '\n' + opts.comment : ''))) + '">' + CHAT_ICO + esc(t('contactBtn')) + '</a></section>' : '';
   // طلب اليوم لسا ما انقيّم: تذكير فوق البطاقة
+  var vbox = opts.mine && opts.verify ? verifyBox(opts.verify) : '';
   var pend = opts.mine && opts.pending ? '<section class="panel review"><h2 class="sec">' + esc(t('pendingTitle')) + '</h2><p class="sub" style="margin-bottom:0">' + esc(tq('pendingText', opts.pending.qty)) + '</p>' +
     '<button class="btn" id="goRate" type="button">★ ' + esc(t('pendingBtn')) + '</button></section>' : '';
   $app.className = 'wrap';
-  $app.innerHTML = demoBar() + header() + (opts.mine ? accountBtns() : '') + toast + (opts.flash ? '<div class="toast" role="status">' + esc(opts.flash) + '</div>' : '') + pend + review + contact + (opts.mine ? installBox() : '') +
+  $app.innerHTML = demoBar() + header() + (opts.mine ? accountBtns() : '') + toast + (opts.flash ? '<div class="toast" role="status">' + esc(opts.flash) + '</div>' : '') + vbox + pend + review + contact + (opts.mine ? installBox() : '') +
     '<section class="panel"><div class="cardhead"><div class="who"><small>' + esc(t('customerName')) + '</small><b>' + esc(card.name) + '</b></div>' +
       '</div>' +
       '<div class="grid">' + slots + '</div>' +
@@ -179,8 +240,9 @@ function renderCard(card, opts){
   var gr = document.getElementById('gRev');
   if(gr && opts.comment) gr.addEventListener('click', function(){ try{ copyText(opts.comment, null, function(){ var p = document.getElementById('gPaste'); if(p) p.textContent = t('pasteHint'); }); }catch(e){} });
   if(opts.mine){ bindAccount(card); bindInstall(); }
+  if(opts.mine && opts.verify) bindVerify(verifyCheckMe, afterVerified);
   var gr2 = document.getElementById('goRate'); if(gr2) gr2.onclick = function(){ rateMine(card, opts.pending); };
-  bindCommon(function(){ renderCard(card, {reviewUrl: opts.reviewUrl, contactPhone: opts.contactPhone, comment: opts.comment, mine: opts.mine, pending: opts.pending}); });
+  bindCommon(function(){ renderCard(card, {reviewUrl: opts.reviewUrl, contactPhone: opts.contactPhone, comment: opts.comment, mine: opts.mine, pending: opts.pending, verify: opts.verify}); });
 }
 
 /* روابط بدون دخول: ?t= تقييم (لزبون بدون حساب)، ?new=1 انضمام.
@@ -195,6 +257,7 @@ function routeLink(p){
 /* ========= الزبون بعد تسجيل الدخول ========= */
 var CTOKEN = store('tp_ctok') || '';
 function custSignOut(msg){
+  stopPoll();
   if(CTOKEN) api('custLogout', CTOKEN);
   CTOKEN = ''; store('tp_ctok', null);
   renderLogin(msg);
@@ -213,21 +276,27 @@ function viewMyCard(flash){
 // بعد الدخول: إذا في طلب من اليوم لسا ما انقيّم ← التقييم أول. غير هيك ← البطاقة طوالي
 function showMine(r, flash){
   store('tp_card', null);
-  if(r.waitApproval) return viewWaiting(r.name);
+  stopPoll();
+  if(r.waitApproval) return viewWaiting(r.name, r.verify);
   var p = (r.pending || [])[0];
   if(p) return rateMine(r.card, p);
-  renderCard(r.card, {mine:true, flash:flash});
+  renderCard(r.card, {mine:true, flash:flash, verify:r.verify});
 }
+// لما الرقم يتأكد بالواتساب: البطاقة بتتحدّث لحالها
+function verifyCheckMe(){ return api('custMe', CTOKEN).then(function(m){ return !!(m && m.ok && !m.verify && !m.waitApproval); }); }
+function afterVerified(){ api('custMe', CTOKEN).then(function(m){ if(m && m.ok) showMine(m, t('verifiedOk')); }); }
 // سجّل على رقم كان إله بطاقة: بنستنى موافقة الإدارة قبل ما نعرض البطاقة القديمة
-function viewWaiting(name){
+function viewWaiting(name, verify){
   $app.className = 'wrap';
   $app.innerHTML = demoBar() + header() + accountBtns(true) +
+    (verify ? verifyBox(verify, t('verifyTitle'), t('verifyOldCard')) :
     '<section class="panel">' + (name ? '<p class="hello">' + esc(t('hiName')) + ' ' + esc(name) + ' \uD83D\uDC4B</p>' : '') +
       '<h1>' + esc(t('waitTitle')) + '</h1><p class="sub">' + esc(t('waitText')) + '</p>' +
-      '<button class="btn ghost" id="wRe" type="button">' + esc(t('retry')) + '</button></section>' + howPanel();
-  document.getElementById('accOut').onclick = function(){ custSignOut(); };
-  document.getElementById('wRe').onclick = function(){ viewMyCard(); };
-  bindCommon(function(){ viewWaiting(name); });
+      '<button class="btn ghost" id="wRe" type="button">' + esc(t('retry')) + '</button></section>') + howPanel();
+  document.getElementById('accOut').onclick = function(){ stopPoll(); custSignOut(); };
+  var re = document.getElementById('wRe'); if(re) re.onclick = function(){ viewMyCard(); };
+  if(verify) bindVerify(verifyCheckMe, afterVerified);
+  bindCommon(function(){ viewWaiting(name, verify); });
 }
 function rateMine(card, p){
   TOKEN_QTY = Math.max(1, Math.min(10, Number(p.qty) || 1));

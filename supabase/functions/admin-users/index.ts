@@ -24,7 +24,7 @@ const ANON_KEY = Deno.env.get('SUPABASE_ANON_KEY') || '';
 const SERVICE_KEY = Deno.env.get('SUPABASE_SERVICE_ROLE_KEY') || '';
 const ALLOWED = (Deno.env.get('ALLOWED_ORIGINS') || '').split(',').map((s) => s.trim()).filter(Boolean);
 // إيميل داخلي للزبون (مش إيميل حقيقي): رقم التلفون + دومين محجوز ما حدا بيقدر يملكه
-const FN_VERSION = '1.17';   // نسخة السيرفر: لازم تطابق app.db_version و SERVER_VERSION بالتطبيق
+const FN_VERSION = '1.27';   // نسخة السيرفر: لازم تطابق app.db_version و SERVER_VERSION بالتطبيق
 const CUSTOMER_EMAIL_DOMAIN = 'tabooni.invalid';
 const ABC = 'abcdefghjkmnpqrstuvwxyz23456789'; // بدون 0/O و 1/l/I
 
@@ -94,7 +94,8 @@ export async function handler(req) {
       if (!/^05[0-9]{8}$/.test(phone)) return json({ ok: false, error: 'BAD_PHONE' }, origin);
       const password = str(body.password, 100);
       if (!strongPass(password, phone)) return json({ ok: false, error: 'WEAK_PASS' }, origin);
-      const ip = req.headers.get('cf-connecting-ip') || req.headers.get('x-real-ip') || '';
+      // IP من Cloudflare بس (هيدرات ثانية الزائر بيقدر يزوّرها). بدونه: عدّاد مشترك أكبر
+      const ip = req.headers.get('cf-connecting-ip') || '';
       const prep = (await admin.rpc('svc_signup_prepare', { p_phone: phone, p_name: str(body.name, 60), p_gender: str(body.gender, 2),
         p_bday: str(body.bday, 10), p_consent: body.consent === true, p_ip: ip })).data;
       if (!prep || !prep.ok) return json(prep || { ok: false, error: 'DEFAULT' }, origin);
@@ -103,7 +104,7 @@ export async function handler(req) {
       if (created.error && /already|exists|registered/i.test(created.error.message || '')) {
         // حساب قديم مش مربوط بأي بطاقة (بقايا): بينحذف ومنجرّب مرة ثانية
         const old = (await admin.rpc('svc_auth_user_by_email', { p_email: email })).data;
-        if (old && old.ok && old.userId) { await del(old.userId); created = await admin.auth.admin.createUser({ email, password, email_confirm: true, app_metadata: { kind: 'customer' } }); }
+        if (old && old.ok && old.userId && old.linked === false) { await del(old.userId); created = await admin.auth.admin.createUser({ email, password, email_confirm: true, app_metadata: { kind: 'customer' } }); }
       }
       if (created.error || !created.data || !created.data.user) {
         if (!prep.existing) await admin.rpc('svc_signup_abort', { p_customer_id: prep.customerId });

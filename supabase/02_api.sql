@@ -87,6 +87,12 @@ begin
     c.id := app.rotate_card(c.id);
   end if;
 
+  -- صاحب الرقم استعمل رابط وصله على واتساب ← أي حساب سجّل على هالرقم ولسا ما انوافق عليه بينفك (يمكن مش إله)
+  if c.signup_at is not null and (c.approved_at is null or app.unproven(c.signup_at, c.verified_at)) and c.user_id is not null then
+    update app.customers set user_id = null, signup_at = null, must_change = false, temp_hash = null where id = c.id;
+    perform app.audit('signup_detached', app.mask_phone(c.phone), 'phone owner used whatsapp link');
+  end if;
+
   stamped := rating >= app.setting('MIN_RATING_FOR_STAMP')::int;
   if stamped then got := app.add_stamps(c.id, t.qty); end if;
   select * into c from app.customers where id = c.id;
@@ -114,6 +120,33 @@ create or replace function app.pending_for(p_phone text) returns jsonb language 
     and (created_at at time zone 'Asia/Jerusalem')::date = (now() at time zone 'Asia/Jerusalem')::date
 $$;
 
+-- حساب سجّل لحاله ولسا رقمه ما انثبت *بعد* التسجيل (تأكيد قديم للبطاقة ما بيثبت إنه الحساب الجديد لصاحب الرقم)
+create or replace function app.unproven(p_signup timestamptz, p_verified timestamptz) returns boolean language sql immutable set search_path = pg_catalog as $$
+  select p_signup is not null and (p_verified is null or p_verified < p_signup)
+$$;
+
+-- ---------------------------------------------------------------- تأكيد الرقم بالواتساب
+-- رقم طابوني برو للتأكيد بصيغة دولية (wa.me). فاضي = التأكيد بالواتساب مطفي
+create or replace function app.wa_intl() returns text language sql stable security definer set search_path = app, pg_catalog as $$
+  select case when app.setting('WA_VERIFY_NUMBER') = '' then '' else '972' || substr(app.setting('WA_VERIFY_NUMBER'), 2) end
+$$;
+-- رمز 6 أرقام. تأكيد حساب: صالح 14 يوم (الإدارة ممكن تأكّد يدوياً بعد وقت)، استرجاع رقم: 24 ساعة.
+-- نفس الرمز بيرجع إذا لسا صالح (ما بنولّد رمز جديد كل مرة)
+create or replace function app.wa_code(p_phone text, p_uid uuid, p_purpose text) returns text language plpgsql volatile security definer set search_path = app, pg_catalog as $$
+declare c text;
+begin
+  select code into c from app.wa_codes where phone = p_phone and purpose = p_purpose and used_at is null and expires_at > now()
+    and user_id is not distinct from p_uid order by id desc limit 1;
+  if c is not null then return c; end if;
+  c := lpad((floor(random() * 1000000))::int::text, 6, '0');
+  insert into app.wa_codes(code, phone, user_id, purpose, expires_at)
+  values (c, p_phone, p_uid, p_purpose, now() + case when p_purpose = 'signup' then interval '14 days' else interval '24 hours' end);
+  return c;
+end $$;
+create or replace function app.wa_json(p_phone text, p_uid uuid, p_purpose text) returns jsonb language sql volatile security definer set search_path = app, pg_catalog as $$
+  select case when app.wa_intl() = '' then null else jsonb_build_object('wa', app.wa_intl(), 'code', app.wa_code(p_phone, p_uid, p_purpose)) end
+$$;
+
 -- ================================================================= بعد الدخول
 
 -- مين أنا؟ إدارة ولا زبون (وبطاقتي). التطبيق بيقرر أي صفحة يفتح حسب هالرد.
@@ -136,11 +169,16 @@ begin
     end if;
   end if;
   update app.customers set last_login_at = now() where id = c.id and (last_login_at is null or last_login_at < now() - interval '10 minutes');
-  -- سجّل لحاله على رقم كان عنده بطاقة من قبل: البطاقة بتبيّن بس بعد موافقة الإدارة (يمكن الرقم مش إله)
-  if c.signup_at is not null and c.approved_at is null and c.source <> 'app' then
-    return jsonb_build_object('ok', true, 'role', 'customer', 'name', c.name, 'mustChange', false, 'card', null, 'waitApproval', true, 'pending', '[]'::jsonb);
+  -- سجّل لحاله ولسا ما انوافق عليه، والبطاقة فيها إشي (رقم كان إله بطاقة، أو انضافت طبعات):
+  -- البطاقة والاسم ما بيبيّنوا لحد موافقة الإدارة (يمكن الرقم مش إله)
+  if c.signup_at is not null and c.approved_at is null and (c.source <> 'app' or c.total_stamps > 0
+      or exists (select 1 from app.rewards r where r.customer_id = c.id)) then
+    return jsonb_build_object('ok', true, 'role', 'customer', 'name', '', 'mustChange', false, 'card', null, 'waitApproval', true, 'pending', '[]'::jsonb,
+      'verify', app.wa_json(c.phone, uid, 'signup'));
   end if;
   return jsonb_build_object('ok', true, 'role', 'customer', 'name', c.name, 'mustChange', c.must_change,
+    -- لسا ما أكّد رقمه: رمز للواتساب (لما يوصل، الحساب بيتوافق لحاله)
+    'verify', case when c.signup_at is not null and c.approved_at is null then app.wa_json(c.phone, uid, 'signup') end,
     'card', case when c.must_change then null else app.card_json(c.id) end,
     -- طلبات اليوم للتقييم: بس لحساب موافَق عليه (أو حساب عملته الإدارة)
     'pending', case when c.must_change or (c.signup_at is not null and c.approved_at is null) then '[]'::jsonb else app.pending_for(c.phone) end);
@@ -206,7 +244,8 @@ begin
       'avgRating', (select round(avg(rating)::numeric, 1) from fb where created_at >= m0),
       'pendingGifts', (select count(*) from app.rewards where status = 'available'),
       'followUps', (select count(*) from fb where follow_up = 'needed'),
-      'signups', (select count(*) from app.customers where signup_at is not null and approved_at is null)),
+      'signups', (select count(*) from app.customers c where c.signup_at is not null and (c.approved_at is null or (app.unproven(c.signup_at, c.verified_at)
+        and exists (select 1 from app.wa_codes w where w.phone = c.phone and w.purpose = 'takeover' and w.used_at is null and w.expires_at > now()))))),
     'followUps', coalesce((select jsonb_agg(j order by created_at desc) from fbo where follow_up = 'needed'), '[]'),
     'reviews', jsonb_build_object(
       'positive', coalesce((select jsonb_agg(j order by created_at desc) from (select * from fbo where rating >= 4 order by created_at desc limit 200) x), '[]'),
@@ -231,7 +270,12 @@ begin
         'gifts', coalesce((select jsonb_agg(jsonb_build_object('type', type, 'status', status, 'earnedAt', earned_at, 'redeemedAt', redeemed_at) order by earned_at desc)
                            from (select * from app.rewards r where r.customer_id = c.id order by earned_at desc limit 10) g), '[]'),
         'hasLogin', c.user_id is not null, 'mustChange', c.user_id is not null and c.must_change, 'lastLoginAt', c.last_login_at,
-        'signupPending', c.signup_at is not null and c.approved_at is null, 'signupAt', c.signup_at, 'claim', c.source <> 'app', 'totalStamps', c.total_stamps)
+        'signupPending', c.signup_at is not null and c.approved_at is null, 'signupAt', c.signup_at, 'claim', c.source <> 'app', 'totalStamps', c.total_stamps,
+        -- رموز الواتساب: لما توصلك رسالة من رقم الزبون فيها نفس الرمز ← الرقم إله
+        'verifyCode', case when c.signup_at is not null and c.approved_at is null then (select w.code from app.wa_codes w where w.phone = c.phone
+          and w.purpose = 'signup' and w.user_id = c.user_id and w.used_at is null and w.expires_at > now() order by w.id desc limit 1) end,
+        'takeoverCode', case when app.unproven(c.signup_at, c.verified_at) then (select w.code from app.wa_codes w where w.phone = c.phone
+          and w.purpose = 'takeover' and w.used_at is null and w.expires_at > now() order by w.id desc limit 1) end)
         order by coalesce(c.last_stamp_at, c.created_at) desc) from app.customers c), '[]'),
     'openTokens', coalesce((select jsonb_agg(jsonb_build_object('token', token, 'phone', phone, 'createdAt', created_at, 'note', note, 'qty', qty) order by created_at desc)
       from (select * from app.tokens where status = 'open' and expires_at > now() order by created_at desc limit 30) t), '[]'),
@@ -252,16 +296,15 @@ begin
   values (tk, p, now() + make_interval(hours => app.setting('TOKEN_HOURS')::int), app.clean(p_note, 100), q);
   perform app.audit('token_created', app.mask_phone(p), 'qty ' || q);
   select * into c from app.customers where phone = p;
-  -- سجّلتله طلب = إنت شفت الزبون صاحب الرقم ← التسجيل بيتوافق والرقم بيتأكد لحاله
-  if c.id is not null and c.signup_at is not null and c.approved_at is null then
-    update app.customers set approved_at = now(), verified_at = coalesce(verified_at, now()) where id = c.id returning * into c;
-    perform app.audit('signup_approved', app.mask_phone(p), 'by order');
-  end if;
-  -- اسم من تسجيل غير مؤكد ممكن يكون من حدا ثاني: ما بنحطه برسالة الواتساب
+  -- تسجيل ذاتي لسا ما انوافق عليه: ما بنوافق لحالنا (يمكن حدا سجّل على رقم مش إله).
+  -- الإدارة بتشوف تنبيه + زر موافقة، ولحد الموافقة التقييم ما بيطلع بالتطبيق
   return jsonb_build_object('ok', true, 'token', tk, 'phone', p, 'qty', q,
     'customerName', case when c.verified_at is not null then c.name else '' end,
     'gender', case when c.verified_at is not null then c.gender else '' end,
-    'inApp', c.user_id is not null);   -- عنده حساب: التقييم بيستنّاه بالتطبيق (بدون رابط)
+    'signupPending', c.signup_at is not null and c.approved_at is null,
+    'claim', c.signup_at is not null and c.approved_at is null and c.source <> 'app',
+    'customerId', case when c.signup_at is not null and c.approved_at is null then c.id end,
+    'inApp', c.user_id is not null and (c.signup_at is null or c.approved_at is not null));   -- حساب فعّال: التقييم بيستنّاه بالتطبيق
 exception when others then return app.err(sqlerrm);
 end $$;
 
@@ -340,7 +383,8 @@ begin
   select * into c from app.customers where id = p_customer_id for update;
   if not found then return app.err('CARD_NOT_FOUND'); end if;
   -- رقم غير مؤكد (سجّل من صفحة الانضمام): إنت شايف الزبون، فبنأكّده ورابط بطاقة جديد (أي رابط قديم بيوقف)
-  if c.verified_at is null then
+  -- (حساب سجّل لحاله: إضافة طبعة مش إثبات إنه الرقم إله، فما بنأكّد الرقم)
+  if c.verified_at is null and c.signup_at is null then
     c.id := app.rotate_card(c.id);
     update app.customers set verified_at = now() where id = c.id;
   end if;
@@ -440,6 +484,8 @@ begin
       when 'GOOGLE_REVIEW_URL'    then if v <> '' and not app.valid_review_url(v) then return app.err('BAD_REVIEW_URL'); end if;
       when 'REVIEW_ASK'           then v := case when v = 'all' then 'all' else 'positive' end;
       when 'CONTACT_PHONE'        then v := app.norm_phone(v); if v <> '' and v !~ '^05[0-9]{8}$' then return app.err('BAD_PHONE'); end if;
+      when 'WA_VERIFY_NUMBER'     then v := app.norm_phone(v); if v <> '' and v !~ '^05[0-9]{8}$' then return app.err('BAD_PHONE'); end if;
+      when 'AUTO_APPROVE_NEW'     then v := case when v in ('0', 'false') then '0' else '1' end;
       else continue;   -- مفتاح مش معروف: بنتجاهله
     end case;
     insert into app.settings(key, value) values (k, v) on conflict (key) do update set value = excluded.value;
@@ -477,7 +523,7 @@ begin
   if not found then return app.err('CARD_NOT_FOUND'); end if;
   if exists (select 1 from app.staff where user_id = p_user_id) then return app.err('FORBIDDEN'); end if;
   update app.customers set user_id = null where user_id = p_user_id and id <> p_customer_id;
-  update app.customers set user_id = p_user_id, must_change = true, pass_set_at = now(),
+  update app.customers set user_id = p_user_id, must_change = true, pass_set_at = now(), signup_at = null, approved_at = null,
     temp_hash = (select encrypted_password from auth.users where id = p_user_id) where id = p_customer_id;
   perform app.audit('cust_password_set', '', '');
   return jsonb_build_object('ok', true, 'oldUserId', case when old is distinct from p_user_id and not exists (select 1 from app.staff where user_id = old) then old end);
@@ -522,7 +568,8 @@ declare u uuid;
 begin
   select id into u from auth.users where lower(email) = lower(p_email);
   if u is not null and exists (select 1 from app.staff where user_id = u) then return app.err('FORBIDDEN'); end if;
-  return jsonb_build_object('ok', true, 'userId', u);
+  -- linked: الحساب مربوط ببطاقة (التسجيل الذاتي ما بيحذفه أبداً)
+  return jsonb_build_object('ok', true, 'userId', u, 'linked', u is not null and exists (select 1 from app.customers where user_id = u));
 end $$;
 
 create or replace function public.am_i_admin() returns boolean language sql stable security definer set search_path = app, pg_catalog as $$
@@ -549,7 +596,6 @@ declare ip text := app.norm_ip(p_ip); f int := case when app.norm_ip(p_ip) = 'no
 begin
   if not app.hit('su:' || ip, 5 * f, 3600) or not app.hit('sud:' || ip, 20 * f, 86400) then return app.err('RATE_LIMIT'); end if;
   if p !~ '^05[0-9]{8}$' then return app.err('BAD_PHONE'); end if;
-  if not app.hit('sup:' || p, 3, 86400) then return app.err('RATE_LIMIT'); end if;
   begin
   begin
     n := app.clean_name(p_name);
@@ -559,6 +605,8 @@ begin
   g := app.clean_gender(p_gender);
   if g = '' then return app.err('NEED_GENDER'); end if;
   if p_consent is distinct from true then return app.err('NEED_CONSENT'); end if;
+  -- حد لكل رقم: بس محاولات كاملة (أخطاء بالنموذج ما بتسكّر الرقم على صاحبه)
+  if not app.hit('sup:' || p, 3, 86400) then return app.err('RATE_LIMIT'); end if;
   -- سقف: أكثر من 200 تسجيل بيستنوا موافقة ← التسجيل بيتسكّر مؤقتاً (هجوم) + تنبيه
   select count(*) into waiting from app.customers where signup_at > now() - interval '7 days' and approved_at is null;
   if waiting >= 200 then
@@ -568,7 +616,11 @@ begin
   if not app.hit('su:h:all', 60, 3600) and app.hit('su:h:alert', 1, 3600) then perform app.audit('signup_flood', '', 'more than 60 signups this hour'); end if;
   select * into c from app.customers where phone = p for update;
   if found then
-    if c.user_id is not null then return app.err('PHONE_TAKEN'); end if;
+    if c.user_id is not null then
+      -- الرقم مع حساب سجّل لحاله ولسا ما تأكّد: صاحب الرقم بيقدر يسترجعه بالواتساب
+      if app.unproven(c.signup_at, c.verified_at) and app.wa_intl() <> '' then return app.err('PHONE_UNVERIFIED'); end if;
+      return app.err('PHONE_TAKEN');
+    end if;
     return jsonb_build_object('ok', true, 'customerId', c.id, 'existing', true);
   end if;
   insert into app.customers(id, name, phone, source, consent_at, gender, bday)
@@ -585,6 +637,14 @@ begin
     signup_at = now(), approved_at = null, consent_at = coalesce(consent_at, now())
   where id = p_customer_id and user_id is null;
   if not found then return app.err('PHONE_TAKEN'); end if;
+  -- زبون جديد بدون بطاقة قديمة: موافقة تلقائية (ما في إشي ينسرق). الرقم بيضل "مش مؤكد" وصاحبه بيقدر يسترجعه
+  update app.customers c set approved_at = now()
+  where c.id = p_customer_id and app.setting('AUTO_APPROVE_NEW') = '1' and c.source = 'app' and c.total_stamps = 0
+    and not exists (select 1 from app.rewards r where r.customer_id = c.id);
+  -- صاحب الرقم أكّد بالواتساب قبل شوي (استرجاع رقم) ← الحساب الجديد مؤكد من أوله
+  update app.customers c set approved_at = now(), verified_at = now()
+  where c.id = p_customer_id and exists (select 1 from app.wa_codes w where w.phone = c.phone and w.purpose = 'takeover'
+    and w.used_at > now() - interval '24 hours');
   perform app.audit('signup', app.mask_phone((select phone from app.customers where id = p_customer_id)), '');
   return jsonb_build_object('ok', true);
 exception when others then return app.err(sqlerrm);
@@ -604,7 +664,7 @@ create or replace function public.admin_approve_signup(p_customer_id text)
 returns jsonb language plpgsql volatile security definer set search_path = app, pg_catalog as $$
 begin
   if not app.is_admin() then return app.err('NO_SESSION'); end if;
-  update app.customers set approved_at = now(), verified_at = coalesce(verified_at, now())
+  update app.customers set approved_at = now(), verified_at = now()   -- الإدارة أكّدت: الرقم لصاحب الحساب (من هلأ)
   where id = p_customer_id and signup_at is not null and approved_at is null;
   if not found then return app.err('NOT_FOUND'); end if;
   perform app.audit('signup_approved', app.mask_phone((select phone from app.customers where id = p_customer_id)), '');
@@ -612,8 +672,101 @@ begin
 exception when others then return app.err(sqlerrm);
 end $$;
 
+-- ================================================================= تأكيد بالواتساب
+-- (زائر) صاحب الرقم بده يسترجع رقمه من حساب مش مؤكد: رمز يبعته من واتساب رقمه
+create or replace function public.start_takeover(p_phone text)
+returns jsonb language plpgsql volatile security definer set search_path = app, pg_catalog as $$
+declare p text := app.norm_phone(p_phone); c app.customers;
+begin
+  if not app.hit_ip('pub', 120, 60) or not app.hit_ip('tko', 10, 3600) then return app.err('RATE_LIMIT'); end if;
+  if p !~ '^05[0-9]{8}$' then return app.err('BAD_PHONE'); end if;
+  if not app.hit('tkop:' || p, 5, 3600) then return app.err('RATE_LIMIT'); end if;
+  begin
+  if app.wa_intl() = '' then return app.err('WA_OFF'); end if;
+  select * into c from app.customers where phone = p;
+  if not found or c.user_id is null or not app.unproven(c.signup_at, c.verified_at) then return app.err('NOT_FOUND'); end if;
+  return jsonb_build_object('ok', true, 'wa', app.wa_intl(), 'code', app.wa_code(p, null, 'takeover'));
+  exception when others then return app.err(sqlerrm);
+  end;
+end $$;
+
+-- (زائر) هل وصل رمز الاسترجاع؟ (التطبيق بيسأل كل كم ثانية)
+create or replace function public.takeover_status(p_phone text, p_code text)
+returns jsonb language plpgsql volatile security definer set search_path = app, pg_catalog as $$
+declare p text := app.norm_phone(p_phone);
+begin
+  if not app.hit_ip('pub', 120, 60) or not app.hit_ip('tks', 60, 60) then return app.err('RATE_LIMIT'); end if;
+  if p !~ '^05[0-9]{8}$' or coalesce(p_code, '') !~ '^[0-9]{6}$' then return app.err('BAD_REQUEST'); end if;
+  return jsonb_build_object('ok', true, 'done', exists (select 1 from app.wa_codes where phone = p and code = p_code
+    and purpose = 'takeover' and used_at is not null and used_at > now() - interval '24 hours'));
+end $$;
+
+-- (إدارة) وصلتك رسالة استرجاع من صاحب الرقم بالرمز الصح ← الحساب المزيّف بيتشال.
+-- بترجع remove=true إذا البطاقة فاضية (بتنحذف كلياً) أو false (البطاقة بتضل، بس الدخول بيوقف).
+-- التطبيق بعدها بيستدعي admin-users (delete/disable) عشان يحذف حساب الدخول المزيّف
+create or replace function public.admin_takeover(p_customer_id text)
+returns jsonb language plpgsql volatile security definer set search_path = app, pg_catalog as $$
+declare c app.customers;
+begin
+  if not app.is_admin() then return app.err('NO_SESSION'); end if;
+  select * into c from app.customers where id = p_customer_id for update;
+  if not found or c.user_id is null or not app.unproven(c.signup_at, c.verified_at) then return app.err('NOT_FOUND'); end if;
+  update app.wa_codes set used_at = now() where phone = c.phone and purpose = 'takeover' and used_at is null and expires_at > now();
+  if not found then return app.err('NOT_FOUND'); end if;
+  perform app.audit('signup_takeover_admin', app.mask_phone(c.phone), '');
+  return jsonb_build_object('ok', true, 'remove', c.source = 'app' and c.total_stamps = 0
+    and not exists (select 1 from app.rewards r where r.customer_id = c.id));
+exception when others then return app.err(sqlerrm);
+end $$;
+
+-- (إدارة) الإدارة كبست على الرابط برسالة الزبون (?ok=رمز أو ?tk=رمز): مين صاحب هالرمز؟
+create or replace function public.admin_code_info(p_kind text, p_code text)
+returns jsonb language plpgsql stable security definer set search_path = app, pg_catalog as $$
+begin
+  if not app.is_admin() then return app.err('NO_SESSION'); end if;
+  if coalesce(p_code, '') !~ '^[0-9]{6}$' or p_kind not in ('ok', 'tk') then return app.err('BAD_REQUEST'); end if;
+  return jsonb_build_object('ok', true, 'kind', p_kind, 'items', coalesce((
+    select jsonb_agg(jsonb_build_object('id', c.id, 'name', c.name, 'phone', c.phone, 'claim', c.source <> 'app', 'stamps', c.total_stamps))
+    from app.wa_codes w join app.customers c on c.phone = w.phone
+    where w.code = p_code and w.used_at is null and w.expires_at > now() and c.signup_at is not null
+      and ((p_kind = 'ok' and w.purpose = 'signup' and c.user_id = w.user_id and c.approved_at is null)
+        or (p_kind = 'tk' and w.purpose = 'takeover' and c.user_id is not null and app.unproven(c.signup_at, c.verified_at)))), '[]'::jsonb));
+exception when others then return app.err(sqlerrm);
+end $$;
+
+-- (Edge Function wa-webhook بس) وصلت رسالة واتساب من رقم: إذا فيها رمز صالح لنفس الرقم ← تأكيد
+create or replace function public.svc_wa_verify(p_phone text, p_code text)
+returns jsonb language plpgsql volatile security definer set search_path = app, pg_catalog as $$
+declare p text := app.norm_phone(p_phone); w app.wa_codes; c app.customers; old uuid;
+begin
+  if p !~ '^05[0-9]{8}$' or coalesce(p_code, '') !~ '^[0-9]{6}$' then return app.err('BAD_REQUEST'); end if;
+  if not app.hit('wav:' || p, 20, 3600) then return app.err('RATE_LIMIT'); end if;
+  select * into w from app.wa_codes where phone = p and code = p_code and used_at is null and expires_at > now() order by id desc limit 1 for update;
+  if not found then return app.err('NOT_FOUND'); end if;
+  update app.wa_codes set used_at = now() where id = w.id;
+  select * into c from app.customers where phone = p for update;
+  if w.purpose = 'signup' then
+    -- الحساب اللي طلب الرمز لسا هو صاحب البطاقة؟ ← موافقة + الرقم مؤكد
+    if c.id is null or c.user_id is distinct from w.user_id then return app.err('NOT_FOUND'); end if;
+    update app.customers set approved_at = coalesce(approved_at, now()), verified_at = now() where id = c.id;
+    perform app.audit('signup_verified_wa', app.mask_phone(p), '');
+    return jsonb_build_object('ok', true, 'purpose', 'signup');
+  end if;
+  -- takeover: حساب مش مؤكد على هالرقم بينفك، وحساب الدخول تبعه بينحذف (Edge Function)
+  if c.id is not null and c.user_id is not null and app.unproven(c.signup_at, c.verified_at) then
+    old := c.user_id;
+    update app.customers set user_id = null, signup_at = null, must_change = false, temp_hash = null where id = c.id;
+    -- زبون جديد فاضي انعمل من الحساب المزيّف: بينحذف كلياً (صاحب الرقم بيسجّل من جديد)
+    delete from app.customers where id = c.id and source = 'app' and total_stamps = 0 and not exists (select 1 from app.rewards r where r.customer_id = c.id);
+    perform app.audit('signup_takeover_wa', app.mask_phone(p), 'unverified account removed');
+  end if;
+  return jsonb_build_object('ok', true, 'purpose', 'takeover',
+    'oldUserId', case when old is not null and not exists (select 1 from app.staff where user_id = old) then old end);
+exception when others then return app.err(sqlerrm);
+end $$;
+
 -- رقم نسخة السيرفر (الداتابيس + الدالة admin-users). بيتغيّر بس لما ملفات السيرفر تتغيّر
-create or replace function app.db_version() returns text language sql immutable set search_path = pg_catalog as $$ select '1.17'::text $$;
+create or replace function app.db_version() returns text language sql immutable set search_path = pg_catalog as $$ select '1.27'::text $$;
 
 -- الإدارة: حالة السيرفر (التطبيق بيقارن النسخ وبينبّه إذا إشي مش محدّث)
 create or replace function public.admin_health()
@@ -623,7 +776,9 @@ begin
   return jsonb_build_object('ok', true, 'db', app.db_version(),
     'signup', exists (select 1 from pg_proc p join pg_namespace n on n.oid = p.pronamespace where n.nspname = 'public' and p.proname = 'svc_signup_prepare'),
     'oldJoin', exists (select 1 from pg_proc p join pg_namespace n on n.oid = p.pronamespace where n.nspname = 'public' and p.proname = 'join_program'),
-    'mfa', not exists (select 1 from app.staff where not require_mfa));
+    'mfa', not exists (select 1 from app.staff where not require_mfa),
+    'wa', app.wa_intl() <> '',
+    'waLast', (select max(used_at) from app.wa_codes));
 exception when others then return app.err(sqlerrm);
 end $$;
 
@@ -642,7 +797,8 @@ do $$ begin
     execute 'revoke execute on all functions in schema public from anon, authenticated, service_role';
     -- زوّار + مسجّلين
     execute 'grant execute on function public.get_token_info(text),
-      public.submit_feedback(text, int, text, text, boolean, text, text) to anon, authenticated';
+      public.submit_feedback(text, int, text, text, boolean, text, text),
+      public.start_takeover(text), public.takeover_status(text, text) to anon, authenticated';
     -- مسجّلين بس (كل دالة بتفحص الدور لحالها)
     execute 'grant execute on function public.me(), public.cust_password_changed(), public.cust_submit_feedback(text, int, text), public.am_i_admin(),
       public.admin_dashboard(), public.admin_create_token(text, text, int), public.admin_add_customer(text, text, text, text),
@@ -650,11 +806,12 @@ do $$ begin
       public.admin_import(jsonb), public.admin_adjust_stamps(text, int), public.admin_rename_customer(text, text),
       public.admin_rotate_card_link(text), public.admin_cancel_token(text),
       public.admin_redeem(text), public.admin_delete_feedback(text), public.admin_resolve_follow_up(text),
-      public.admin_save_settings(jsonb), public.admin_approve_signup(text), public.admin_card(text), public.admin_health() to authenticated';
+      public.admin_save_settings(jsonb), public.admin_approve_signup(text), public.admin_card(text), public.admin_health(), public.admin_takeover(text), public.admin_code_info(text, text) to authenticated';
     -- Edge Function بس
     execute 'grant execute on function public.svc_login_prepare(text), public.svc_login_link(text, uuid), public.svc_auth_user_by_email(text),
       public.svc_disable_login(text), public.svc_delete_customer(text),
-      public.svc_signup_prepare(text, text, text, text, boolean, text), public.svc_signup_link(text, uuid), public.svc_signup_abort(text) to service_role';
+      public.svc_signup_prepare(text, text, text, text, boolean, text), public.svc_signup_link(text, uuid), public.svc_signup_abort(text),
+      public.svc_wa_verify(text, text) to service_role';
   end if;
 end $$;
 

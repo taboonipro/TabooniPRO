@@ -44,7 +44,7 @@ function avatar(name, online){
   return '<span class="av" style="--h:' + h + '" aria-hidden="true">' + esc(s) + (online ? '<i class="dot"></i>' : '') + '</span>';
 }
 var $app = document.getElementById('app');
-var SESSION = sstore('tp_sess') || '';
+var SESSION = sstore('tp_sess') || (typeof adminDeviceOk === 'function' && adminDeviceOk() ? store('tp_sess') : '') || '';
 var ADM = {tab:null, q:'', data:null, last:null, flash:'', rv:'neg', adding:false};
 
 function viewAdmin(){
@@ -57,6 +57,8 @@ function viewAdmin(){
     if(!ADM.tab) ADM.tab = r.followUps.length ? 'follow' : r.gifts.length ? 'gifts' : 'customers';
     if(IS_LIVE) GREVIEW = r.settings.GOOGLE_REVIEW_URL || '';
     renderAdmin();
+    // كبست على رابط موافقة برسالة زبون ← شاشة الموافقة
+    var pa = sstore('tp_approve'); if(pa){ sstore('tp_approve', null); showCodeApproval(pa.split(':')[0], pa.split(':')[1]); }
     // مرة بالجلسة: فحص إنه الداتابيس والدالة على نفس نسخة التطبيق
     if(IS_LIVE && !ADM.health){ ADM.health = {pending:true}; api('health').then(function(h){ ADM.health = h; renderAdmin(); }); }
   });
@@ -111,6 +113,14 @@ function sendStampLink(phone, name, btn){
     var go = this, q = qtyVal('dq'); go.disabled = true;
     api('adminCreateToken', SESSION, phone, '', q).then(function(r){
       if(!r.ok){ go.disabled = false; if(r.error === 'NO_SESSION'){ dlg.close(); SESSION = ''; sstore('tp_sess', null); return renderLogin(t('sessionExpired')); } document.getElementById('dErr').textContent = errText(r.error); return; }
+      if(r.signupPending){
+        go.outerHTML = signupBox(r) + '<div id="afterAp"></div>';
+        bindSignupBox(r, function(){ var w = document.querySelector('#qr .warn-toast'); if(w) w.remove();
+          document.getElementById('afterAp').innerHTML = '<p class="sub" style="margin:0 0 10px;color:var(--gold)">' + esc(t('orderInApp')) + '</p>' +
+            '<a class="btn wa" target="_blank" rel="noopener" href="' + esc(waLink(phone, fill(tqg('orderAppMsg', q, gender), name) + APP_URL)) + '">' + CHAT_ICO + esc(t('sendNudge')) + '</a>'; });
+        document.querySelectorAll('#qr .qty button, #qr .qty input').forEach(function(el){ el.disabled = true; });
+        return;
+      }
       var msg = r.inApp ? fill(tqg('orderAppMsg', q, gender), name) + APP_URL : fill(tqg('waMsgNamed', q, gender), name) + tokenUrl(r.token);
       go.outerHTML = (r.inApp ? '<p class="sub" style="margin:0 0 10px;color:var(--gold)">' + esc(t('orderInApp')) + '</p>' : '<p class="sub" style="margin:0 0 10px">' + esc(t('orderNoLogin')) + '</p>') +
         '<a class="btn wa" id="waGo" target="_blank" rel="noopener" href="' + esc(waLink(phone, msg)) + '">' + CHAT_ICO + esc(r.inApp ? t('sendNudge') : t('sendWa')) + ' · ' + esc(tq('qtyPizzas', q)) + '</a>';
@@ -149,11 +159,11 @@ function viewCustCard(id){
 // حالة السيرفر: التطبيق، الداتابيس (SQL)، الدالة admin-users. لازم كلهم نفس الرقم
 function healthRows(){
   var h = ADM.health; if(!h || h.pending) return null;
-  return [['hApp', 'v' + h.app, true], ['hDb', h.db ? 'v' + h.db : t('hMissing'), h.db === h.need], ['hFn', h.fn && h.fn !== 'old' ? 'v' + h.fn : t('hOld'), h.fn === h.need], ['hMfa', h.mfa ? '✓' : '✗', h.mfa]];
+  return [['hApp', 'v' + h.app, true], ['hDb', h.db ? 'v' + h.db : t('hMissing'), h.db === h.need], ['hFn', h.fn && h.fn !== 'old' ? 'v' + h.fn : t('hOld'), h.fn === h.need], ['hMfa', h.mfa ? '✓' : '✗', h.mfa], ['hWa', h.wa ? (h.waLast ? t('hWaLast') + ' ' + fmtDate(h.waLast) : t('hWaOn')) : t('hWaOff'), !!h.wa]];
 }
 function healthWarn(){
   var r = healthRows(); if(!r) return '';
-  var bad = r.filter(function(x){ return !x[2] && x[0] !== 'hMfa'; });
+  var bad = r.filter(function(x){ return !x[2] && x[0] !== 'hMfa' && x[0] !== 'hWa'; });
   if(!bad.length) return '';
   return '<div class="toast warn-toast" role="alert"><b>' + esc(t('hWarn')) + '</b><br>' + bad.map(function(x){ return esc(t(x[0])) + ': ' + esc(x[1]) + ' ← ' + esc(t(x[0] + 'Fix')); }).join('<br>') + '</div>';
 }
@@ -161,6 +171,33 @@ function healthPanel(){
   var r = healthRows();
   return '<section class="panel"><h2 class="sec">' + esc(t('hTitle')) + '</h2>' + (r ? '<div class="list">' + r.map(function(x){
     return '<div class="item" style="padding:10px 14px"><b>' + esc(t(x[0])) + '</b><span class="pill ' + (x[2] ? 'ok' : 'warn') + '" dir="ltr">' + (x[2] ? '✓ ' : '✗ ') + esc(x[1]) + '</span></div>'; }).join('') + '</div>' : '<p class="sub">…</p>') + '</section>';
+}
+// شاشة موافقة بكبسة: مين صاحب الرمز (اسم + رقم)، وزر واحد
+function fmtPhone(p){ p = String(p || ''); return p.length === 10 ? p.slice(0, 3) + '-' + p.slice(3, 6) + '-' + p.slice(6) : p; }
+function showCodeApproval(kind, code){
+  var dlg = document.getElementById('qr');
+  dlg.innerHTML = '<p class="sub">…</p>';
+  if(dlg.showModal && !dlg.open) dlg.showModal(); else dlg.setAttribute('open', '');
+  api('adminCodeInfo', SESSION, kind, code).then(function(r){
+    var close = '<button class="btn small ghost" type="button" id="qc" style="margin-top:12px">' + esc(t('close')) + '</button>';
+    if(!r.ok || !r.items.length){ dlg.innerHTML = '<h2>' + esc(t('codeDoneTitle')) + '</h2><p class="sub">' + esc(t('codeDoneText')) + '</p>' + close; document.getElementById('qc').onclick = function(){ dlg.close(); }; return; }
+    var tk = kind === 'tk';
+    dlg.innerHTML = '<h2>' + esc(t(tk ? 'apTkTitle' : 'apOkTitle')) + '</h2>' + r.items.map(function(c){
+      return '<div class="apcard"><b>' + esc(c.name) + '</b><div class="apphone" dir="ltr">' + esc(fmtPhone(c.phone)) + '</div>' +
+        (c.claim ? '<span class="pill warn">' + esc(fill(t('existingCard'), c.stamps)) + '</span>' : '<span class="pill">' + esc(t('newCust')) + '</span>') +
+        '<p class="sub" style="margin:10px 0 0">' + esc(t(tk ? 'apTkNote' : 'apOkNote')) + '</p>' +
+        '<button class="btn" type="button" data-ap="' + esc(c.id) + '" data-name="' + esc(c.name) + '">✓ ' + esc(t(tk ? 'takeoverBtn' : 'approve')) + '</button></div>'; }).join('') + close;
+    document.getElementById('qc').onclick = function(){ dlg.close(); };
+    dlg.querySelectorAll('[data-ap]').forEach(function(b){ b.onclick = function(){
+      b.disabled = true;
+      var done = function(x){ if(x && !x.ok){ b.disabled = false; alert(errText(x.error)); return; } dlg.close(); ADM.flash = t('apDone') + ' ' + b.dataset.name; viewAdmin(); };
+      if(!tk) return api('adminApproveSignup', SESSION, b.dataset.ap).then(done);
+      api('adminTakeover', SESSION, b.dataset.ap).then(function(x){
+        if(!x.ok) return done(x);
+        api(x.remove ? 'adminDeleteCustomer' : 'adminDisableCustomerLogin', SESSION, b.dataset.ap).then(done);
+      });
+    }; });
+  });
 }
 function hint(k){ return '<p class="sub hint">' + esc(t(k)) + '</p>'; }
 function waBtn(phone, msg, cls, label, extra){ return phone ? '<a class="btn small wa ' + (cls || '') + '" target="_blank" rel="noopener" href="' + esc(waLink(phone, msg)) + '"' + (extra || '') + '>' + CHAT_ICO + esc(label || t('whatsapp')) + '</a>' : ''; }
@@ -210,10 +247,30 @@ function stat(v, label, cls, icon, go){
   return '<button type="button" class="stat ' + (cls || '') + '" data-go="' + esc(go || '') + '"><span class="si">' + ico(icon || 'star') + '</span><span class="sv"><b>' + esc(v) + '</b><span>' + esc(label) + '</span></span>' + ico('chev', 'chev') + '</button>';
 }
 function stars(n){ return '<span class="rate' + (n <= 3 ? ' low' : '') + '">' + '★★★★★'.slice(0, n) + '<span style="opacity:.25">' + '★★★★★'.slice(0, 5 - n) + '</span></span>'; }
+// تسجيل ذاتي لسا ما انوافق عليه: تنبيه + زر موافقة (الموافقة بس من الإدارة، مش تلقائي)
+function signupBox(r){
+  if(!r || !r.signupPending) return '';
+  return '<div class="toast warn-toast" style="margin:10px 0;text-align:start"><b>' + esc(t(r.claim ? 'orderClaimWarn' : 'orderSignupWarn')) + '</b><br>' + esc(t('orderApproveHint')) +
+    '<button class="btn small gold" type="button" id="apNow" data-id="' + esc(r.customerId || '') + '" style="margin-top:8px">✓ ' + esc(t('approve')) + '</button></div>';
+}
+function bindSignupBox(r, after){
+  var b = document.getElementById('apNow'); if(!b) return;
+  b.onclick = function(){
+    b.disabled = true;
+    api('adminApproveSignup', SESSION, b.dataset.id).then(function(x){
+      if(!x.ok){ b.disabled = false; alert(errText(x.error)); return; }
+      r.signupPending = false; r.claim = false; r.inApp = true;
+      (ADM.data.customers || []).forEach(function(c){ if(c.id === b.dataset.id) c.signupPending = false; });
+      if(ADM.data.stats) ADM.data.stats.signups = Math.max(0, (ADM.data.stats.signups || 0) - 1);
+      after();
+    });
+  };
+}
 function resultBox(){
   var L = ADM.last; if(!L) return '';
   var url = tokenUrl(L.token);
   var q = L.qty || 1;
+  if(L.signupPending) return '<div class="result"><b>' + esc(t('orderSaved')) + '</b> · <span dir="ltr">' + esc(L.phone) + '</span> · <span class="pill">' + esc(tq('qtyPizzas', q)) + '</span>' + signupBox(L) + '</div>';
   if(L.inApp) return '<div class="result"><b>' + esc(t('orderSaved')) + '</b> · ' + esc(L.customerName) + ' <span dir="ltr">' + esc(L.phone) + '</span> · <span class="pill">' + esc(tq('qtyPizzas', q)) + '</span>' +
     '<p class="sub" style="margin:8px 0">' + esc(t('orderInApp')) + '</p>' +
     '<a class="btn gold" target="_blank" rel="noopener" href="' + esc(waLink(L.phone, fill(tqg('orderAppMsg', q, L.gender), L.customerName) + APP_URL)) + '">' + esc(t('sendNudge')) + '</a></div>';
@@ -222,7 +279,10 @@ function resultBox(){
     '<div class="linkrow"><input type="text" readonly value="' + esc(url) + '" aria-label="link"><button class="btn small ghost" id="cpl" type="button">' + esc(t('copy')) + '</button></div>' +
     '<a class="btn gold" target="_blank" rel="noopener" href="' + esc(waLink(L.phone, (L.customerName ? fill(tqg('waMsgNamed', q, L.gender), L.customerName) : tq('waMsg', q)) + url)) + '">' + esc(t('sendWa')) + '</a></div>';
 }
-function bindResult(){ var b = document.getElementById('cpl'); if(b) b.onclick = function(){ copyText(tokenUrl(ADM.last.token), b); }; }
+function bindResult(){
+  var b = document.getElementById('cpl'); if(b) b.onclick = function(){ copyText(tokenUrl(ADM.last.token), b); };
+  bindSignupBox(ADM.last, function(){ document.getElementById('res').innerHTML = resultBox(); bindResult(); });
+}
 // توحيد الأسماء للبحث: بدون تشكيل، أ/إ/آ = ا، ة = ه، ى = ي
 function normName(s){ return String(s || '').toLowerCase().replace(/[\u064B-\u0652\u0640]/g, '').replace(/[أإآ]/g, 'ا').replace(/ة/g, 'ه').replace(/ى/g, 'ي').replace(/\s+/g, ' ').trim(); }
 function findCustomers(q){
@@ -305,12 +365,16 @@ function tabBody(){
         '<div class="acts">' + waBtn(n.phone, fill(tqg('nudgeMsg' + n.next, 1, n.gender), nm), n.sent ? 'ghost' : '', n.sent ? t('resend') : t('sendReminder'), ' data-nudge="' + esc(n.id) + '"') + '</div></div>'; });
     return hint('nudgesHint') + '<div class="list">' + (rows.join('') || '<p class="empty">' + esc(t('empty')) + '</p>') + '</div>';
   } else if(ADM.tab === 'signups'){
-    var su = d.customers.filter(function(c){ return c.signupPending; }).sort(function(a, b){ return String(b.signupAt).localeCompare(String(a.signupAt)); });
+    var su = d.customers.filter(function(c){ return c.signupPending || c.takeoverCode; }).sort(function(a, b){ return String(b.signupAt).localeCompare(String(a.signupAt)); });
     rows = su.map(function(c){
       return '<div class="item cust">' + avatar(c.name) + '<div class="cinfo"><b>' + esc(c.name) + '</b> ' +
         (c.claim ? '<span class="pill warn">' + esc(fill(t('existingCard'), c.totalStamps)) + '</span>' : '<span class="pill">' + esc(t('newCust')) + '</span>') +
-        '<div class="meta"><span dir="ltr">' + esc(c.phone) + '</span> · ' + esc(fmtDate(c.signupAt)) + '</div>' + (c.claim ? '<p class="sub" style="margin:6px 0 0">' + esc(t('claimHint')) + '</p>' : '') + '</div>' +
-        '<div class="acts"><button class="btn small gold" type="button" data-approve="' + esc(c.id) + '">✓ ' + esc(t('approve')) + '</button>' +
+        '<div class="meta"><span dir="ltr">' + esc(c.phone) + '</span> · ' + esc(fmtDate(c.signupAt)) + '</div>' + (c.claim ? '<p class="sub" style="margin:6px 0 0">' + esc(t('claimHint')) + '</p>' : '') +
+        // الرمز اللي لازم يوصلك بالواتساب من رقم هالزبون
+        (c.verifyCode ? '<div class="vcode">' + esc(t('codeToExpect')) + ' <b dir="ltr">' + esc(c.verifyCode) + '</b></div>' : '<div class="meta">' + esc(t('noCodeYet')) + '</div>') +
+        (c.takeoverCode ? '<div class="toast warn-toast" style="margin:8px 0 0;text-align:start"><b>' + esc(t('takeoverReq')) + ' <span dir="ltr">' + esc(c.takeoverCode) + '</span></b><br>' + esc(t('takeoverHint')) +
+          '<button class="btn small gold" type="button" data-takeover="' + esc(c.id) + '" data-name="' + esc(c.name) + '" style="margin-top:8px">' + esc(t('takeoverBtn')) + '</button></div>' : '') + '</div>' +
+        '<div class="acts">' + (c.signupPending ? '<button class="btn small gold" type="button" data-approve="' + esc(c.id) + '">✓ ' + esc(c.verifyCode ? t('approveCode') : t('approve')) + '</button>' : '') +
         '<button class="btn small ghost" type="button" data-viewcard="' + esc(c.id) + '">' + esc(t('viewCard')) + '</button>' +
         '<button class="btn small ghost danger" type="button" data-reject="' + esc(c.id) + '" data-claim="' + (c.claim ? '1' : '') + '" data-name="' + esc(c.name) + '">✕ ' + esc(t('reject')) + '</button></div></div>'; });
     return hint('signupsHint') + (su.length > 1 ? '<button class="btn small" id="apAll" type="button" style="margin:0 0 12px">✓ ' + esc(t('approveAll')) + ' (' + su.length + ')</button>' : '') +
@@ -367,6 +431,8 @@ function tabBody(){
         '<label for="s0">' + esc(t('publicUrl')) + '</label><div class="linkrow"><input id="s0" type="url" dir="ltr" value="' + esc(s.PUBLIC_URL || '') + '" placeholder="https://…github.io/…/"><button class="btn small ghost" id="s0me" type="button">' + esc(t('useThisUrl')) + '</button></div>' +
         '<label for="s5">' + esc(t('googleUrl')) + '</label><input id="s5" type="url" dir="ltr" value="' + esc(s.GOOGLE_REVIEW_URL || '') + '" placeholder="https://g.page/r/…/review">' +
         '<label for="s7">' + esc(t('contactPhone')) + '</label><input id="s7" type="tel" dir="ltr" inputmode="tel" value="' + esc(s.CONTACT_PHONE || '') + '" placeholder="05XXXXXXXX">' +
+        '<label for="s8">' + esc(t('waNumberLabel')) + '</label><input id="s8" type="tel" dir="ltr" inputmode="tel" value="' + esc(s.WA_VERIFY_NUMBER || '') + '" placeholder="05XXXXXXXX"><p class="sub hint" style="margin:6px 0 0">' + esc(t('waNumberHint')) + '</p>' +
+        '<label for="s9">' + esc(t('autoNewLabel')) + '</label><select id="s9"><option value="1"' + (s.AUTO_APPROVE_NEW !== '0' ? ' selected' : '') + '>' + esc(t('autoNewOn')) + '</option><option value="0"' + (s.AUTO_APPROVE_NEW === '0' ? ' selected' : '') + '>' + esc(t('autoNewOff')) + '</option></select>' +
         '<label for="s6">' + esc(t('reviewAsk')) + '</label><select id="s6"><option value="positive"' + (s.REVIEW_ASK !== 'all' ? ' selected' : '') + '>' + esc(t('askPositive')) + '</option><option value="all"' + (s.REVIEW_ASK === 'all' ? ' selected' : '') + '>' + esc(t('askAll')) + '</option></select>' +
         '<label for="s1">' + esc(t('setMin')) + '</label><input id="s1" type="number" min="1" max="5" value="' + esc(s.MIN_RATING_FOR_STAMP) + '">' +
         '<label for="s3">' + esc(t('setLow')) + '</label><input id="s3" type="number" min="0" max="5" value="' + esc(s.LOW_RATING_ALERT) + '">' +
@@ -460,6 +526,15 @@ function bindTab(){
   each('[data-viewcard]', function(b){ viewCustCard(b.dataset.viewcard); });
   function approveLocal(id){ return function(d){ d.customers.forEach(function(c){ if(c.id === id) c.signupPending = false; }); d.stats.signups = Math.max(0, (d.stats.signups || 0) - 1); }; }
   each('[data-approve]', function(b){ act(api('adminApproveSignup', SESSION, b.dataset.approve), b, approveLocal(b.dataset.approve)); });
+  // صاحب الرقم الحقيقي بعتلك رمز الاسترجاع ← الحساب الحالي بيتشال (البطاقة القديمة بتضل)
+  each('[data-takeover]', function(b){
+    if(!confirm(fill(t('confirmTakeover'), b.dataset.name))) return;
+    b.disabled = true;
+    api('adminTakeover', SESSION, b.dataset.takeover).then(function(r){
+      if(!r.ok){ b.disabled = false; alert(errText(r.error)); return; }
+      act(api(r.remove ? 'adminDeleteCustomer' : 'adminDisableCustomerLogin', SESSION, b.dataset.takeover), b);
+    });
+  });
   each('[data-reject]', function(b){
     if(!confirm(fill(t(b.dataset.claim ? 'confirmRejectClaim' : 'confirmRejectNew'), b.dataset.name))) return;
     act(api(b.dataset.claim ? 'adminDisableCustomerLogin' : 'adminDeleteCustomer', SESSION, b.dataset.reject), b);
@@ -481,7 +556,7 @@ function bindTab(){
   if(sv) sv.onclick = function(){
     var serr = document.getElementById('serr'); sv.disabled = true;
     api('adminSaveSettings', SESSION, {MIN_RATING_FOR_STAMP:document.getElementById('s1').value, LOW_RATING_ALERT:document.getElementById('s3').value,
-      TOKEN_HOURS:document.getElementById('s2').value, ALERT_EMAIL:document.getElementById('s4').value.trim(), PUBLIC_URL:document.getElementById('s0').value.trim(), GOOGLE_REVIEW_URL:document.getElementById('s5').value.trim(), REVIEW_ASK:document.getElementById('s6').value, CONTACT_PHONE:document.getElementById('s7').value.trim()}).then(function(r){
+      TOKEN_HOURS:document.getElementById('s2').value, ALERT_EMAIL:document.getElementById('s4').value.trim(), PUBLIC_URL:document.getElementById('s0').value.trim(), GOOGLE_REVIEW_URL:document.getElementById('s5').value.trim(), REVIEW_ASK:document.getElementById('s6').value, CONTACT_PHONE:document.getElementById('s7').value.trim(), WA_VERIFY_NUMBER:document.getElementById('s8').value.trim(), AUTO_APPROVE_NEW:document.getElementById('s9').value}).then(function(r){
       sv.disabled = false;
       if(!r.ok){ serr.textContent = errText(r.error); return; }
       sv.textContent = t('saved'); setTimeout(viewAdmin, 900);
@@ -561,7 +636,7 @@ function makeLogin(id, btn){
 }
 function adminSignOut(msg, skipServer){
   if(SESSION || skipServer) api('adminLogout', SESSION); // بيمسح الجلسة من هالجهاز
-  SESSION = ''; sstore('tp_sess', null); PAGE = 'customer';
+  SESSION = ''; sstore('tp_sess', null); store('tp_sess', null); try{ localStorage.removeItem('tp_admin_dev'); }catch(e){} PAGE = 'customer';
   ADM = {tab:null, q:'', data:null, last:null, flash:'', rv:'neg', adding:false};
   var d = document.getElementById('qr'); if(d && d.open) d.close();
   renderLogin(msg);
@@ -576,6 +651,7 @@ function startAdmin(){
   var last = Date.now();
   ['click','keydown','touchstart'].forEach(function(ev){ document.addEventListener(ev, function(){ last = Date.now(); }, {passive:true}); });
   IDLE_TIMER = setInterval(function(){
-    if(SESSION && Date.now() - last > 30 * 60 * 1000) adminSignOut(t('idleOut'));
+    // جهاز محفوظ ("هاد تلفوني"): بدون خروج تلقائي
+    if(SESSION && !adminDeviceOk() && Date.now() - last > 30 * 60 * 1000) adminSignOut(t('idleOut'));
   }, 60 * 1000);
 }

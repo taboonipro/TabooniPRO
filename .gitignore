@@ -1,0 +1,6 @@
+.DS_Store
+Thumbs.db
+*.zip
+*.csv
+.env
+supabase/.temp/

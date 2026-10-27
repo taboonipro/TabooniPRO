@@ -3,13 +3,13 @@
 
 function renderLogin(msg){
   PAGE = 'customer';
-  $app.className = 'wrap';
+  $app.className = 'wrap loginpage';   // شاشة مضغوطة: زر الدخول بيبيّن بدون نزول
   $app.innerHTML = demoBar() + header() +
     '<section class="panel login"><h1>' + esc(t('loginTitle')) + '</h1>' +
       // زبون جديد: الاشتراك وكيف بتاخذ طبعة، أول إشي تحت العنوان
-      '<a class="btn gold" id="joinBtn" href="' + esc(APP_URL + '?new=1') + '">★ ' + esc(t('joinLink')) + '</a>' + howPanel() +
+      '<a class="btn join" id="joinBtn" href="' + esc(APP_URL + '?new=1') + '"><span class="jstar" aria-hidden="true">★</span><span>' + esc(t('joinLink')) + '</span><span class="jarrow" aria-hidden="true">‹</span></a>' + howPanel() +
       '<div class="orline"><span>' + esc(t('orLogin')) + '</span></div>' +
-      '<p class="sub">' + esc(t('loginSub')) + '</p>' +
+      '<p class="sub lsub">' + esc(t('loginSub')) + '</p>' +
       '<form id="lf" autocomplete="on" novalidate>' +
         '<label for="lu">' + esc(t('userLabel')) + '</label><input id="lu" name="username" type="text" inputmode="text" dir="ltr" autocomplete="username" autocapitalize="none" spellcheck="false" maxlength="64" placeholder="' + esc(t('userPh')) + '">' +
         '<label for="lp">' + esc(t('passLabel')) + '</label><div class="passrow"><input id="lp" name="password" type="password" dir="ltr" autocomplete="current-password" maxlength="64">' +
@@ -20,7 +20,8 @@ function renderLogin(msg){
     '<p class="privacy" dir="ltr" style="opacity:.55">v' + esc(APP_VERSION) + '</p>';
   var u = document.getElementById('lu'), p = document.getElementById('lp'), sh = document.getElementById('lshow');
   var last = store('tp_user'); if(last) u.value = last;
-  (last ? p : u).focus();
+  // بالتلفون ما بنفتح الكيبورد لحاله (بيغطي الشاشة وبيخبي زر الدخول)
+  if(!(window.matchMedia && matchMedia('(pointer: coarse)').matches)) (last ? p : u).focus();
   sh.onclick = function(){ var on = p.type === 'password'; p.type = on ? 'text' : 'password'; sh.textContent = t(on ? 'hidePass' : 'showPass'); sh.setAttribute('aria-pressed', on ? 'true' : 'false'); };
   document.getElementById('lf').onsubmit = function(e){
     e.preventDefault();
@@ -56,6 +57,7 @@ function renderMfa(){
       '<section class="panel login"><h1>' + esc(t('mfaTitle')) + '</h1><p class="sub">' + esc(t(r.enrolled ? 'mfaSub' : 'mfaSetupSub')) + '</p>' +
         (r.enrolled ? '' : '<div class="qrbox" style="text-align:center">' + qrHtml(r.uri) + '</div><p class="sub">' + esc(t('mfaManual')) + '</p><p class="mono" dir="ltr" style="word-break:break-all;user-select:all">' + esc(r.secret) + '</p>') +
         '<form id="mf" novalidate><label for="mc">' + esc(t('mfaCode')) + '</label><input id="mc" type="text" inputmode="numeric" pattern="[0-9]*" autocomplete="one-time-code" maxlength="6" dir="ltr">' +
+        '<label class="consent" style="margin-top:12px"><input type="checkbox" id="mrem"> <span>' + esc(t('mfaRemember')) + '</span></label>' +
         '<button class="btn" id="mgo" type="submit">' + esc(t('loginBtn')) + '</button><div class="err" id="err" role="alert"></div></form>' +
         '<button class="btn ghost" id="mcancel" type="button" style="margin-top:10px">' + esc(t('signOut')) + '</button></section>';
     var c = document.getElementById('mc'); c.focus();
@@ -64,10 +66,11 @@ function renderMfa(){
       e.preventDefault();
       var err = document.getElementById('err'), btn = document.getElementById('mgo');
       btn.disabled = true; err.textContent = '';
-      api('mfaVerify', r.factorId, c.value).then(function(v){
+      api('mfaVerify', r.factorId, c.value, document.getElementById('mrem').checked).then(function(v){
         btn.disabled = false;
         if(!v.ok){ err.textContent = errText(v.error); c.value = ''; c.focus(); return; }
         SESSION = v.session; sstore('tp_sess', SESSION);
+        if(v.remember) store('tp_sess', SESSION);
         startAdmin();
       });
     };
@@ -77,6 +80,13 @@ function renderMfa(){
 function boot(){
   window.__BOOTED = true;
   var p = {}; try{ new URLSearchParams(location.search).forEach(function(v, k){ p[k] = v; }); }catch(e){}
+  // رابط موافقة من رسالة زبون (?ok= / ?tk=): للإدارة بس. بنحفظه، وبعد دخول الإدارة بتطلع شاشة الموافقة
+  if((p.ok || p.tk) && /^\d{6}$/.test(p.ok || p.tk)){
+    sstore('tp_approve', (p.ok ? 'ok:' : 'tk:') + (p.ok || p.tk));
+    try{ history.replaceState(null, '', location.pathname); }catch(e){}
+    if(SESSION) return startAdmin();
+    return renderLogin(t('loginToApprove'));
+  }
   // روابط الواتساب بتشتغل بدون دخول (زي قبل)
   if(p.t || p.c || p['new']) return routeLink(p);
   if(SESSION) return startAdmin();

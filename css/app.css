@@ -391,3 +391,59 @@ dialog.sheet{background:#12100e;text-align:start;position:fixed;inset:auto 0 0 0
 @media (prefers-reduced-motion:reduce){.done-check,.done-bar i{animation:none}.done-bar i{width:100%}}
 
 .warn-toast{background:#2a1512;border-color:#6b2a22;color:#f3c9bf;font-weight:500;line-height:1.7}
+
+/* ---------- شاشة الدخول المضغوطة: كل إشي لحد زر "دخول" بيبيّن بشاشة التلفون ---------- */
+.loginpage .top{padding:0 0 8px}
+.loginpage .top-actions{top:4px}
+.loginpage .logo-img{width:78px;height:78px}
+.loginpage .panel.login{padding:16px 18px 14px}
+.loginpage .panel.login h1{font-size:22px;margin:0 0 10px}
+/* زر الاشتراك: ذهبي مصمت وكتابة غامقة، واضح إنه زر */
+.btn.join{display:flex;align-items:center;justify-content:center;gap:10px;margin-top:0;padding:14px 16px;
+  background:linear-gradient(180deg,#f6d27e,#e3ad4f);color:#1b1307;border:1px solid #f1c56a;font-size:17px;font-weight:800;
+  box-shadow:0 8px 22px rgba(227,173,79,.28),inset 0 1px 0 rgba(255,255,255,.45)}
+.btn.join:hover{filter:brightness(1.05)}
+.btn.join:focus-visible{outline:3px solid #fff3d6;outline-offset:2px}
+.btn.join .jstar{font-size:18px}
+.btn.join .jarrow{font-size:22px;line-height:1;opacity:.75;margin-inline-start:auto}
+.btn.join .jstar{margin-inline-end:auto}
+/* "كيف بتاخذ طبعة" أصغر بشاشة الدخول */
+.loginpage .steps{margin:10px 0 0;padding:8px 8px 6px}
+.loginpage .steps-t{font-size:14px;margin-bottom:6px}
+.loginpage .steps .si{width:36px;height:36px;font-size:18px}
+.loginpage .steps ol::before{top:18px}
+.loginpage .steps .sn{min-width:16px;height:16px;font-size:10px;top:-5px;inset-inline-start:calc(50% + 9px)}
+.loginpage .steps .stx{font-size:12px;line-height:1.35}
+.loginpage .orline{margin:10px 0 0}
+.loginpage .lsub{display:none}
+.loginpage label{margin:8px 0 4px;font-size:13px}
+.loginpage input[type=text],.loginpage input[type=password]{padding:11px 14px}
+.loginpage #lgo{margin-top:12px}
+.loginpage .err{min-height:0;margin-top:6px}
+.loginpage .err:empty{display:none}
+.loginpage .hint{margin:8px 0 0 !important;font-size:13px}
+/* تلفونات قصيرة (مثل iPhone SE): أصغر كمان */
+@media (max-height:620px){
+  .loginpage .logo-img{width:60px;height:60px}
+  .loginpage .top{padding-bottom:6px}
+  .loginpage .panel.login{padding-top:12px}
+  .loginpage .panel.login h1{font-size:20px;margin-bottom:8px}
+  .loginpage .btn.join{padding:12px 14px;font-size:16px}
+  .loginpage .steps-t{display:none}
+  .loginpage .steps .stx{font-size:11.5px}
+  .loginpage label{margin-top:6px}
+}
+
+/* تأكيد الرقم بالواتساب */
+.panel.verify{border-color:#2f5a3a;background:linear-gradient(180deg,rgba(37,211,102,.08),transparent 60%),var(--panel)}
+.panel.verify .sec{color:#8fe0ad}
+.vwait{margin:10px 0 0;color:var(--gold);animation:vblink 1.6s ease-in-out infinite}
+@keyframes vblink{50%{opacity:.45}}
+@media (prefers-reduced-motion:reduce){.vwait{animation:none}}
+
+.vcode{margin:8px 0 0;padding:8px 12px;border-radius:10px;background:rgba(37,211,102,.08);border:1px solid #2f5a3a;color:var(--text);font-size:14px}
+.vcode b{font-size:18px;letter-spacing:3px;color:#8fe0ad}
+
+.apcard{margin:12px 0 0;padding:14px;border:1px solid var(--line-2);border-radius:14px;background:var(--panel-2);text-align:start}
+.apcard b{font-size:18px}
+.apphone{font-size:24px;font-weight:800;letter-spacing:1px;color:var(--gold);margin:4px 0 8px;font-variant-numeric:tabular-nums}

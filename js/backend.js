@@ -20,7 +20,9 @@ var SB = IS_LIVE ? window.supabase.createClient(CFG.SUPABASE_URL, CFG.SUPABASE_A
 function moveSessionToTab(){ // بعد دخول الإدارة: الجلسة بتنتقل لهالتاب بس
   try{ sessionStorage.setItem('tp_admin', '1'); var v = localStorage.getItem('tp-auth'); if(v){ sessionStorage.setItem('tp-auth', v); localStorage.removeItem('tp-auth'); } }catch(e){}
 }
-function clearAuthStore(){ try{ sessionStorage.removeItem('tp_admin'); sessionStorage.removeItem('tp-auth'); localStorage.removeItem('tp-auth'); }catch(e){} }
+function clearAuthStore(){ try{ sessionStorage.removeItem('tp_admin'); sessionStorage.removeItem('tp-auth'); localStorage.removeItem('tp-auth'); localStorage.removeItem('tp_admin_dev'); localStorage.removeItem('tp_sess'); }catch(e){} }
+// جهاز إدارة محفوظ ("هاد تلفوني") ولسا ما خلصت مدته؟
+function adminDeviceOk(){ try{ var v = Number(localStorage.getItem('tp_admin_dev') || 0); if(v && v > Date.now()) return true; if(v){ localStorage.removeItem('tp_admin_dev'); localStorage.removeItem('tp_sess'); } }catch(e){} return false; }
 
 // اسم الدالة بالتطبيق ← [دالة الداتابيس، أسماء المتغيرات، هل أول متغير هو "جلسة" قديمة (بنتجاهله)]
 var RPC_MAP = {
@@ -28,6 +30,10 @@ var RPC_MAP = {
   submitFeedback:         ['submit_feedback', ['p_token', 'p_rating', 'p_comment', 'p_name', 'p_consent', 'p_gender', 'p_bday']],
   custRate:               ['cust_submit_feedback', ['p_token', 'p_rating', 'p_comment']],
   adminApproveSignup:     ['admin_approve_signup', ['p_customer_id'], true],
+  adminTakeover:          ['admin_takeover', ['p_customer_id'], true],
+  adminCodeInfo:          ['admin_code_info', ['p_kind', 'p_code'], true],
+  startTakeover:          ['start_takeover', ['p_phone']],
+  takeoverStatus:         ['takeover_status', ['p_phone', 'p_code']],
   adminCard:              ['admin_card', ['p_customer_id'], true],
   adminDashboard:         ['admin_dashboard', [], true],
   adminCreateToken:       ['admin_create_token', ['p_phone', 'p_note', 'p_qty'], true],
@@ -107,7 +113,7 @@ async function sbCall(fn, args){
       }
       if(d.role === 'admin'){ moveSessionToTab(); return {ok:true, role:'admin', session:'sb'}; }
       if(d.role === 'admin_mfa') return {ok:true, role:'mfa'};       // الخطوة الثانية: كود من تطبيق المصادقة
-      return {ok:true, role:'customer', token:'sb', mustChange: !!d.mustChange, name: d.name, card: d.card, pending: d.pending || [], waitApproval: !!d.waitApproval};
+      return {ok:true, role:'customer', token:'sb', mustChange: !!d.mustChange, name: d.name, card: d.card, pending: d.pending || [], waitApproval: !!d.waitApproval, verify: d.verify || null};
     }
     // ---- التحقق بخطوتين للإدارة (TOTP: Google Authenticator / Microsoft Authenticator)
     if(fn === 'mfaStart'){
@@ -127,8 +133,10 @@ async function sbCall(fn, args){
       if(cv.error) return {ok:false, error: cv.error.status === 429 ? 'LOCKED' : 'BAD_CODE'};
       var me3 = await SB.rpc('me'), d3 = me3.data || {};
       if(me3.error || d3.role !== 'admin') return {ok:false, error:'NO_SESSION'};
-      moveSessionToTab();
-      return {ok:true, role:'admin', session:'sb'};
+      // "هاد تلفوني": الجلسة بتضل على الجهاز 30 يوم (روابط الموافقة من الواتساب بتفتح بدون دخول من جديد)
+      if(args[2] === true){ try{ localStorage.setItem('tp_admin_dev', String(Date.now() + 30 * 864e5)); }catch(x){} }
+      else moveSessionToTab();
+      return {ok:true, role:'admin', session:'sb', remember: args[2] === true};
     }
     // ---- اشتراك ذاتي: الحساب بينعمل بالسيرفر (Edge Function)، وبعدها دخول عادي
     if(fn === 'signup'){
@@ -144,7 +152,7 @@ async function sbCall(fn, args){
     // ---- فحص السيرفر: نسخة الداتابيس + نسخة الدالة admin-users
     if(fn === 'health'){
       var out = {ok:true, app: APP_VERSION, need: SERVER_VERSION, db:'', fn:'', signup:false, mfa:false};
-      try{ var h = await SB.rpc('admin_health'); if(h.data && h.data.ok){ out.db = h.data.db; out.signup = !!h.data.signup; out.mfa = !!h.data.mfa; } }catch(x){}
+      try{ var h = await SB.rpc('admin_health'); if(h.data && h.data.ok){ out.db = h.data.db; out.signup = !!h.data.signup; out.mfa = !!h.data.mfa; out.wa = !!h.data.wa; out.waLast = h.data.waLast || ''; } }catch(x){}
       try{ var pg = await SB.functions.invoke('admin-users', { body: { action:'ping' } }); var pd = pg.data;
         if(pg.error){ try{ pd = await pg.error.context.json(); }catch(y){ pd = null; } }
         out.fn = pd && pd.fn ? pd.fn : (pd && pd.error ? 'old' : ''); }catch(x){}

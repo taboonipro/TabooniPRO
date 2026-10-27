@@ -16,10 +16,10 @@ with checks as (
                      where n.nspname = 'app' and c.relkind = 'r' and not c.relrowsecurity)
   union all
   -- 4) الزوار بيقدروا ينفّذوا 4 دوال بس
-  select '4. الزوار: دالتين بس (رابط تقييم، تقييم)',
+  select '4. الزوار: 4 دوال بس (رابط تقييم، تقييم، استرجاع رقم بالواتساب)',
          (select array_agg(p.proname::text order by p.proname) from pg_proc p join pg_namespace n on n.oid = p.pronamespace
           where n.nspname = 'public' and has_function_privilege('anon', p.oid, 'EXECUTE'))
-         = array['get_token_info', 'submit_feedback']
+         = array['get_token_info', 'start_takeover', 'submit_feedback', 'takeover_status']
   union all
   -- 5) دوال svc_ (حسابات الدخول) للـ service_role بس
   select '5. دوال svc_ مقفولة عن المتصفح', not exists (select 1 from pg_proc p join pg_namespace n on n.oid = p.pronamespace

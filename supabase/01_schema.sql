@@ -105,6 +105,21 @@ create table if not exists app.audit_log (
   details text not null default ''
 );
 
+-- تأكيد الرقم بالواتساب: الزبون بيبعت رمز من واتساب رقمه لرقم طابوني برو
+--   signup   : حساب سجّل لحاله (user_id) ← لما يوصل الرمز من نفس الرقم، الحساب بيتوافق
+--   takeover : صاحب الرقم بده يسترجع رقمه من حساب مش مؤكد ← الحساب المزيّف بينفك
+create table if not exists app.wa_codes (
+  id         bigserial primary key,
+  code       text not null check (code ~ '^[0-9]{6}$'),
+  phone      text not null check (phone ~ '^05[0-9]{8}$'),
+  user_id    uuid,
+  purpose    text not null check (purpose in ('signup', 'takeover')),
+  created_at timestamptz not null default now(),
+  expires_at timestamptz not null,
+  used_at    timestamptz
+);
+create index if not exists wa_codes_phone_idx on app.wa_codes(phone);
+
 create table if not exists app.rate_limits (
   k      text   not null,
   bucket bigint not null,
@@ -127,6 +142,7 @@ alter table app.settings    enable row level security;
 alter table app.staff       enable row level security;
 alter table app.audit_log   enable row level security;
 alter table app.rate_limits enable row level security;
+alter table app.wa_codes    enable row level security;
 revoke all on all tables in schema app from public;
 revoke all on all sequences in schema app from public;
 do $$ begin
@@ -139,8 +155,9 @@ end $$;
 -- إعدادات أولية (ما بتغيّر قيم موجودة)
 insert into app.settings(key, value) values
   ('MIN_RATING_FOR_STAMP', '1'), ('TOKEN_HOURS', '48'), ('LOW_RATING_ALERT', '3'), ('ALERT_EMAIL', ''),
-  ('PUBLIC_URL', ''), ('GOOGLE_REVIEW_URL', 'https://g.page/r/CevtOd_PNw2PECE/review'), ('REVIEW_ASK', 'positive'), ('CONTACT_PHONE', '')
+  ('PUBLIC_URL', ''), ('GOOGLE_REVIEW_URL', 'https://g.page/r/CevtOd_PNw2PECE/review'), ('REVIEW_ASK', 'positive'), ('CONTACT_PHONE', ''), ('WA_VERIFY_NUMBER', '')
 on conflict (key) do nothing;
+insert into app.settings(key, value) values ('WA_VERIFY_NUMBER', ''), ('AUTO_APPROVE_NEW', '1') on conflict (key) do nothing;
 
 -- ---------------------------------------------------------------- أدوات
 -- خطأ معروف للتطبيق (أي خطأ ثاني بيرجع DEFAULT، والتفاصيل بتضل بالسيرفر)
@@ -148,7 +165,7 @@ create or replace function app.err(e text) returns jsonb language sql immutable 
   select jsonb_build_object('ok', false, 'error',
     case when e = any (array['TOKEN_INVALID','TOKEN_EXPIRED','TOKEN_USED','NEED_NAME','NEED_CONSENT','BAD_RATING','BAD_PHONE',
       'BAD_URL','BAD_REVIEW_URL','BAD_NAME','NEED_GENDER','NEED_COMMENT','BAD_BDAY','EXISTS','NO_SESSION','FORBIDDEN',
-      'RATE_LIMIT','CARD_NOT_FOUND','NOT_FOUND','TEMP_EXPIRED','NO_LOGIN','BAD_REQUEST','PHONE_TAKEN','SIGNUP_CLOSED']) then e else 'DEFAULT' end)
+      'RATE_LIMIT','CARD_NOT_FOUND','NOT_FOUND','TEMP_EXPIRED','NO_LOGIN','BAD_REQUEST','PHONE_TAKEN','SIGNUP_CLOSED','PHONE_UNVERIFIED','WA_OFF']) then e else 'DEFAULT' end)
 $$;
 create or replace function app.fail(code text) returns void language plpgsql set search_path = pg_catalog as $$
 begin raise exception using message = code, errcode = 'P0001'; end $$;
@@ -248,13 +265,15 @@ begin
     when 'GOOGLE_REVIEW_URL'    then return case when app.valid_review_url(v) then v else '' end;
     when 'PUBLIC_URL'           then return case when app.valid_app_url(v) then v else '' end;
     when 'CONTACT_PHONE'        then return case when app.norm_phone(v) ~ '^05[0-9]{8}$' then app.norm_phone(v) else '' end;
+    when 'WA_VERIFY_NUMBER'     then return case when app.norm_phone(v) ~ '^05[0-9]{8}$' then app.norm_phone(v) else '' end;
+    when 'AUTO_APPROVE_NEW'     then return case when v = '0' then '0' else '1' end;
     when 'ALERT_EMAIL'          then return case when v ~* '^[^\s@<>"'',;]+@[^\s@<>"'',;]+\.[a-z]{2,}$' then btrim(v) else '' end;
     else return v;
   end case;
 end $$;
 
 create or replace function app.settings_json() returns jsonb language sql stable security definer set search_path = app, pg_catalog as $$
-  select jsonb_object_agg(k, app.setting(k)) from unnest(array['MIN_RATING_FOR_STAMP','TOKEN_HOURS','LOW_RATING_ALERT','ALERT_EMAIL','PUBLIC_URL','GOOGLE_REVIEW_URL','REVIEW_ASK','CONTACT_PHONE']) k
+  select jsonb_object_agg(k, app.setting(k)) from unnest(array['MIN_RATING_FOR_STAMP','TOKEN_HOURS','LOW_RATING_ALERT','ALERT_EMAIL','PUBLIC_URL','GOOGLE_REVIEW_URL','REVIEW_ASK','CONTACT_PHONE','WA_VERIFY_NUMBER','AUTO_APPROVE_NEW']) k
 $$;
 
 -- ---------------------------------------------------------------- هوية الطالب
@@ -304,11 +323,13 @@ end $$;
 -- ---------------------------------------------------------------- حدود الاستعمال
 -- true = مسموح. العدّاد بيزيد حتى لو الطلب بعدين فشل (الدوال بترجع أخطاء بدون ما تلغي العدّاد)
 create or replace function app.hit(p_key text, p_max int, p_win int) returns boolean language plpgsql volatile security definer set search_path = app, pg_catalog as $$
-declare b bigint := floor(extract(epoch from now()) / p_win); c int;
+-- bucket = بداية النافذة بالثواني (epoch)، فالتنظيف بيعرف شو قديم مهما كان طول النافذة
+declare b bigint := floor(extract(epoch from now()) / p_win) * p_win; c int;
 begin
   insert into app.rate_limits as r (k, bucket, n) values (p_key, b, 1)
   on conflict (k, bucket) do update set n = r.n + 1 returning r.n into c;
-  if random() < 0.01 then delete from app.rate_limits where bucket < floor(extract(epoch from now()) / 86400) - 2 and k not like '%:d:%'; end if;
+  -- تنظيف: كل نافذة بلّشت قبل أكثر من يومين (أطول نافذة عنا يوم واحد)
+  if random() < 0.01 then delete from app.rate_limits where bucket < extract(epoch from now()) - 2 * 86400; end if;
   return c <= p_max;
 end $$;
 
